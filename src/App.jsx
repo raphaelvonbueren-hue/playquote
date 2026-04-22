@@ -383,18 +383,43 @@ function Dashboard({equipment,manufacturers,projects,setPage,setActiveProjectId}
 
 /* ═══════════════════════════ CATALOG ═══════════════════════════ */
 function Catalog({equipment,setEquipment,manufacturers}) {
-  const [filter,setFilter]=useState({cat:"Alle",search:"",age:"Alle"});
+  const [search,setSearch]=useState("");
+  const [filters,setFilters]=useState({cat:"Alle",age:"Alle",mat:"Alle",mfr:"Alle",priceMin:"",priceMax:""});
+  const [sort,setSort]=useState("name-asc");
+  const [showFilters,setShowFilters]=useState(false);
   const [showForm,setShowForm]=useState(false);
   const [editing,setEditing]=useState(null);
   const [form,setForm]=useState({name:"",cat:"Schaukeln",age:"Altersgemischt",mat:"Robinie",mfr:1,price:0,fallZone:1.5,desc:"",size:[2,2]});
 
-  const visible = equipment.filter(e=>{
-    if(filter.cat!=="Alle"&&e.cat!==filter.cat) return false;
-    if(filter.age!=="Alle"&&e.age!==filter.age) return false;
-    if(filter.search&&!e.name.toLowerCase().includes(filter.search.toLowerCase())) return false;
+  const allMats=[...new Set(equipment.map(e=>e.mat))].sort();
+  const activeFilterCount=[filters.cat!=="Alle",filters.age!=="Alle",filters.mat!=="Alle",filters.mfr!=="Alle",filters.priceMin!=="",filters.priceMax!==""].filter(Boolean).length;
+
+  const visible=equipment.filter(e=>{
+    if(filters.cat!=="Alle"&&e.cat!==filters.cat) return false;
+    if(filters.age!=="Alle"&&e.age!==filters.age) return false;
+    if(filters.mat!=="Alle"&&e.mat!==filters.mat) return false;
+    if(filters.mfr!=="Alle"&&String(e.mfr)!==filters.mfr) return false;
+    if(filters.priceMin!==""&&e.price<Number(filters.priceMin)) return false;
+    if(filters.priceMax!==""&&e.price>Number(filters.priceMax)) return false;
+    if(search){
+      const q=search.toLowerCase();
+      const mfrName=manufacturers.find(m=>m.id===e.mfr)?.name||"";
+      if(!e.name.toLowerCase().includes(q)&&!(e.artNr||"").toLowerCase().includes(q)&&!(e.desc||"").toLowerCase().includes(q)&&!mfrName.toLowerCase().includes(q)&&!e.cat.toLowerCase().includes(q)) return false;
+    }
     return true;
+  }).sort((a,b)=>{
+    switch(sort){
+      case"name-asc":  return a.name.localeCompare(b.name,"de");
+      case"name-desc": return b.name.localeCompare(a.name,"de");
+      case"price-asc": return a.price-b.price;
+      case"price-desc":return b.price-a.price;
+      case"cat":       return a.cat.localeCompare(b.cat,"de")||a.name.localeCompare(b.name,"de");
+      case"mfr":       return (manufacturers.find(m=>m.id===a.mfr)?.name||"").localeCompare(manufacturers.find(m=>m.id===b.mfr)?.name||"","de");
+      default: return 0;
+    }
   });
 
+  function resetFilters(){ setFilters({cat:"Alle",age:"Alle",mat:"Alle",mfr:"Alle",priceMin:"",priceMax:""}); setSearch(""); }
   function openEdit(e) { setEditing(e.id); setForm({...e}); setShowForm(true); }
   function openNew() { setEditing(null); setForm({name:"",cat:"Schaukeln",age:"Altersgemischt",mat:"Robinie",mfr:1,price:0,fallZone:1.5,desc:"",size:[2,2]}); setShowForm(true); }
   function save() {
@@ -404,52 +429,148 @@ function Catalog({equipment,setEquipment,manufacturers}) {
   }
   function del(id) { setEquipment(prev=>prev.filter(e=>e.id!==id)); }
 
+  const selSt={padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:T.bg,cursor:"pointer",outline:"none"};
+
   return (
     <div className="fade-in">
+      {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
         <div>
           <div className="syne" style={{fontSize:24,fontWeight:800}}>Gerätekatalog</div>
-          <div style={{color:T.muted,fontSize:13}}>{equipment.length} Geräte in der Datenbank</div>
+          <div style={{color:T.muted,fontSize:13}}>
+            <span style={{color:T.green,fontWeight:700}}>{visible.length}</span> von {equipment.length} Geräten
+          </div>
         </div>
         <Btn onClick={openNew}>+ Gerät hinzufügen</Btn>
       </div>
-      <Card style={{padding:"14px 16px",marginBottom:16}}>
-        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
-          <input value={filter.search} onChange={e=>setFilter(f=>({...f,search:e.target.value}))} placeholder="🔍 Suchen..."
-            style={{flex:1,minWidth:180,padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:T.bg,outline:"none"}}/>
-          <select value={filter.cat} onChange={e=>setFilter(f=>({...f,cat:e.target.value}))}
-            style={{padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:T.bg,cursor:"pointer",outline:"none"}}>
-            {["Alle",...CATS].map(c=><option key={c}>{c}</option>)}
-          </select>
-          <select value={filter.age} onChange={e=>setFilter(f=>({...f,age:e.target.value}))}
-            style={{padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:T.bg,cursor:"pointer",outline:"none"}}>
-            {["Alle",...AGES].map(a=><option key={a}>{a}</option>)}
-          </select>
+
+      {/* Search + Sort + Filter Bar */}
+      <Card style={{padding:"14px 16px",marginBottom:12}}>
+        <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+          {/* Search */}
+          <div style={{flex:1,minWidth:220,position:"relative"}}>
+            <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:15,pointerEvents:"none",color:T.muted}}>🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)}
+              placeholder="Name, Art.-Nr., Beschreibung, Hersteller…"
+              style={{width:"100%",padding:"8px 12px 8px 34px",border:`1.5px solid ${search?T.green:T.border}`,borderRadius:8,fontSize:13,fontFamily:"inherit",background:T.bg,outline:"none",boxSizing:"border-box",transition:"border-color .15s"}}/>
+            {search&&<button onClick={()=>setSearch("")} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",fontSize:13,color:T.muted}}>✕</button>}
+          </div>
+          {/* Sort */}
+          <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+            <span style={{fontSize:12,color:T.muted,whiteSpace:"nowrap"}}>↕️ Sortieren:</span>
+            <select value={sort} onChange={e=>setSort(e.target.value)} style={selSt}>
+              <option value="name-asc">Name A→Z</option>
+              <option value="name-desc">Name Z→A</option>
+              <option value="price-asc">Preis ↑</option>
+              <option value="price-desc">Preis ↓</option>
+              <option value="cat">Kategorie</option>
+              <option value="mfr">Hersteller</option>
+            </select>
+          </div>
+          {/* Filter toggle */}
+          <button onClick={()=>setShowFilters(v=>!v)}
+            style={{padding:"8px 14px",borderRadius:8,border:`1.5px solid ${showFilters||activeFilterCount>0?T.green:T.border}`,background:showFilters||activeFilterCount>0?T.green+"15":"white",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,color:showFilters||activeFilterCount>0?T.green:T.text,display:"flex",alignItems:"center",gap:6,transition:"all .15s",flexShrink:0}}>
+            ⚙️ Filter
+            {activeFilterCount>0&&<span style={{background:T.green,color:"white",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{activeFilterCount}</span>}
+          </button>
+          {(activeFilterCount>0||search)&&
+            <button onClick={resetFilters} style={{padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.border}`,background:"white",cursor:"pointer",fontFamily:"inherit",fontSize:12,color:T.muted,flexShrink:0}}>✕ Reset</button>
+          }
         </div>
-      </Card>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
-        {visible.map(e=>(
-          <Card key={e.id} style={{padding:18,position:"relative"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
-              <div style={{width:48,height:48,borderRadius:12,background:e.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>{e.icon}</div>
-              <div style={{display:"flex",gap:6}}>
-                <button onClick={()=>openEdit(e)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:T.muted}}>✏️</button>
-                <button onClick={()=>del(e.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:T.muted}}>🗑️</button>
+        {/* Filter Panel */}
+        {showFilters&&(
+          <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${T.border}`,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:12}}>
+            {[
+              {label:"Kategorie",key:"cat",opts:["Alle",...CATS]},
+              {label:"Altersgruppe",key:"age",opts:["Alle",...AGES]},
+              {label:"Material",key:"mat",opts:["Alle",...allMats]},
+            ].map(({label,key,opts})=>(
+              <div key={key}>
+                <label style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,display:"block",marginBottom:5}}>{label}</label>
+                <select value={filters[key]} onChange={e=>setFilters(f=>({...f,[key]:e.target.value}))} style={{...selSt,width:"100%"}}>
+                  {opts.map(o=><option key={o}>{o}</option>)}
+                </select>
               </div>
+            ))}
+            <div>
+              <label style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,display:"block",marginBottom:5}}>Hersteller</label>
+              <select value={filters.mfr} onChange={e=>setFilters(f=>({...f,mfr:e.target.value}))} style={{...selSt,width:"100%"}}>
+                <option value="Alle">Alle</option>
+                {manufacturers.map(m=><option key={m.id} value={String(m.id)}>{m.name}</option>)}
+              </select>
             </div>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>{e.name}</div>
-            <div style={{fontSize:12,color:T.muted,marginBottom:10,lineHeight:1.4}}>{e.desc}</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
-              <Badge color={e.color}>{e.cat}</Badge>
-              <Badge color={T.greenMid}>{e.mat}</Badge>
-              <Badge color="#6B7280">{e.age}</Badge>
+            <div>
+              <label style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,display:"block",marginBottom:5}}>Preis ab (CHF)</label>
+              <input type="number" value={filters.priceMin} onChange={e=>setFilters(f=>({...f,priceMin:e.target.value}))}
+                placeholder="z.B. 500" style={{...selSt,width:"100%",boxSizing:"border-box"}}/>
             </div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:`1px solid ${T.border}`,paddingTop:10}}>
-              <span style={{fontSize:11,color:T.muted}}>Fallzone: {e.fallZone}m · {manufacturers.find(m=>m.id===e.mfr)?.name||"—"}</span>
-              <span className="syne" style={{fontWeight:800,color:T.green,fontSize:16}}>{fmt(e.price)}</span>
+            <div>
+              <label style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,display:"block",marginBottom:5}}>Preis bis (CHF)</label>
+              <input type="number" value={filters.priceMax} onChange={e=>setFilters(f=>({...f,priceMax:e.target.value}))}
+                placeholder="z.B. 5000" style={{...selSt,width:"100%",boxSizing:"border-box"}}/>
             </div>
-          </Card>
-        ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Active Filter Chips */}
+      {(activeFilterCount>0||search)&&(
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+          {search&&<span style={{background:T.green+"18",color:T.green,border:`1px solid ${T.green}44`,borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>🔍 "{search}"</span>}
+          {filters.cat!=="Alle"&&<span style={{background:T.gold+"22",color:"#B07C1C",border:`1px solid ${T.gold}66`,borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>{filters.cat}</span>}
+          {filters.age!=="Alle"&&<span style={{background:"#6B728018",color:"#6B7280",border:"1px solid #6B728055",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>{filters.age}</span>}
+          {filters.mat!=="Alle"&&<span style={{background:T.greenMid+"18",color:T.greenMid,border:`1px solid ${T.greenMid}55`,borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>{filters.mat}</span>}
+          {filters.mfr!=="Alle"&&<span style={{background:"#8B5CF618",color:"#8B5CF6",border:"1px solid #8B5CF655",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>{manufacturers.find(m=>String(m.id)===filters.mfr)?.name}</span>}
+          {(filters.priceMin||filters.priceMax)&&<span style={{background:"#EF444418",color:"#EF4444",border:"1px solid #EF444455",borderRadius:20,padding:"3px 10px",fontSize:12,fontWeight:600}}>CHF {filters.priceMin||"0"} – {filters.priceMax||"∞"}</span>}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {visible.length===0&&(
+        <Card style={{padding:40,textAlign:"center"}}>
+          <div style={{fontSize:40,marginBottom:12}}>🔍</div>
+          <div style={{fontWeight:700,marginBottom:6}}>Keine Geräte gefunden</div>
+          <div style={{color:T.muted,fontSize:13,marginBottom:16}}>Passen Sie die Suchbegriffe oder Filter an.</div>
+          <Btn variant="ghost" onClick={resetFilters}>Filter zurücksetzen</Btn>
+        </Card>
+      )}
+
+      {/* Product Grid */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+        {visible.map(e=>{
+          const mfrName=manufacturers.find(m=>m.id===e.mfr)?.name||"—";
+          const hl=(str)=>{
+            if(!search||!str||typeof str!=="string") return str;
+            const idx=str.toLowerCase().indexOf(search.toLowerCase());
+            if(idx<0) return str;
+            return <>{str.slice(0,idx)}<mark style={{background:T.gold+"66",borderRadius:2,padding:"0 1px"}}>{str.slice(idx,idx+search.length)}</mark>{str.slice(idx+search.length)}</>;
+          };
+          return (
+            <Card key={e.id} style={{padding:18,position:"relative"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:44,height:44,borderRadius:12,background:e.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{e.icon}</div>
+                  {e.artNr&&<span style={{fontSize:10,color:T.muted,background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,padding:"2px 6px",fontFamily:"monospace",letterSpacing:.3}}>{hl(e.artNr)}</span>}
+                </div>
+                <div style={{display:"flex",gap:4}}>
+                  <button onClick={()=>openEdit(e)} style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:T.muted,padding:4}}>✏️</button>
+                  <button onClick={()=>del(e.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:T.muted,padding:4}}>🗑️</button>
+                </div>
+              </div>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:4,lineHeight:1.3}}>{hl(e.name)}</div>
+              <div style={{fontSize:11.5,color:T.muted,marginBottom:10,lineHeight:1.4,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{e.desc}</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
+                <Badge color={e.color}>{e.cat}</Badge>
+                <Badge color={T.greenMid}>{e.mat}</Badge>
+                <Badge color="#6B7280">{e.age}</Badge>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:`1px solid ${T.border}`,paddingTop:10}}>
+                <span style={{fontSize:11,color:T.muted}}>⬡ {e.fallZone}m · {mfrName}</span>
+                <span className="syne" style={{fontWeight:800,color:T.green,fontSize:16}}>{fmt(e.price)}</span>
+              </div>
+            </Card>
+          );
+        })}
       </div>
       {showForm&&(
         <Modal title={editing?"Gerät bearbeiten":"Neues Gerät"} onClose={()=>setShowForm(false)} width={600}>
