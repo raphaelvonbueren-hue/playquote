@@ -921,6 +921,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   const measureRef=useRef({first:null, layer:null});
   const [pendingEq,setPendingEq]=useState(null);
   const [measureInfo,setMeasureInfo]=useState(null);
+  const [collisionWarning,setCollisionWarning]=useState(false);
 
   const placed=project.placed||[];
   const obstacles=project.obstacles||[];
@@ -949,10 +950,10 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     setConflicts(conf);
   },[placed,equipment]);
 
-  /* ────── LEAFLET MAP INIT ────── */
+  /* ────── LEAFLET MAP INIT (einmal beim Mount) ────── */
   useEffect(()=>{
-    if(view!=="2d"||!mapContainerRef.current||!window.L) return;
-    if(mapRef.current){ mapRef.current.invalidateSize(); return; }
+    if(!mapContainerRef.current||!window.L) return;
+    if(mapRef.current) return;
 
     const L=window.L;
     const map=L.map(mapContainerRef.current,{
@@ -1043,8 +1044,15 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     });
 
     mapRef.current=map;
-    return ()=>{ map.remove(); mapRef.current=null; };
+    return ()=>{ if(mapRef.current){ map.remove(); mapRef.current=null; } };
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
+
+  // Invalidate size when switching to 2D view (tiles may render wrong otherwise)
+  useEffect(()=>{
+    if(view==="2d"&&mapRef.current){
+      setTimeout(()=>{ mapRef.current && mapRef.current.invalidateSize(); },50);
+    }
   },[view]);
 
   // Switch tile layer
@@ -1066,13 +1074,35 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
     const mToDeg=(m)=>m/111320; // approx at equator, good enough for small area
 
-    // FALL ZONES (render first, below equipment)
+    // FALL PROTECTION SURFACE (EN 1177) – dunkle, deckende EPDM-Fläche unter Geräten mit Fallhöhe > 60cm
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      if(!eq.fallZone||eq.fallZone<=0.6) return; // nur bei relevanter Fallhöhe
+      const zone=calcFallZone(eq); if(!zone) return;
+      const fpStyle={ color:"#1A120D", weight:1, fillColor:"#2A1F18", fillOpacity:.85, opacity:.9 };
+      if(zone.shape==="circle"){
+        L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{radius:zone.r,...fpStyle}).addTo(fzLayer);
+      } else {
+        const rot=(pl.rot||0)*Math.PI/180;
+        const hw=zone.w/2, hh=zone.h/2;
+        const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>{
+          const rx=x*Math.cos(rot)-y*Math.sin(rot);
+          const ry=x*Math.sin(rot)+y*Math.cos(rot);
+          const lat=(pl.lat||projectCenter.lat)+mToDeg(ry);
+          const lng=(pl.lng||projectCenter.lng)+mToDeg(rx)/Math.cos((pl.lat||projectCenter.lat)*Math.PI/180);
+          return [lat,lng];
+        });
+        L.polygon(corners,fpStyle).addTo(fzLayer);
+      }
+    });
+
+    // FALL ZONES outline (EN 1176) – auf Fallschutz, zeigt Sicherheitszone
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
       const zone=calcFallZone(eq); if(!zone) return;
       const inConflict=conflicts.some(c=>c.includes(pl.id));
       const col=inConflict?"#DC2626":"#F59E0B";
-      const fill=inConflict?"#DC262633":"#F59E0B22";
+      const fill=inConflict?"#DC262633":"#F59E0B11";
       if(zone.shape==="circle"){
         L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{
           radius:zone.r, color:col, weight:2, fillColor:fill, fillOpacity:.3, dashArray:"6 4",
@@ -1295,38 +1325,36 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selected]);
 
-  /* ────── 3D VIEW (Three.js, manuell steuerbar) ────── */
+  /* ────── 3D VIEW (Three.js, robust) ────── */
   // Höhe aus Name/Desc parsen (KOMPAN Muster: "H:2,5m" / "Höhe: 3,0 m" / "3m hoch")
   function parseHeight(eq){
     const txt=`${eq.name||""} ${eq.desc||""}`;
     const m=txt.match(/H[öo]?he?:?\s*(\d+[.,]?\d*)\s*m/i)||txt.match(/(\d+[.,]?\d*)\s*m\s*hoch/i);
     if(m) return parseFloat(m[1].replace(",","."));
-    // Kategorie-Defaults (EN 1176 Richtwerte)
     const d={"Schaukeln":2.5,"Rutschen":1.5,"Karussell":0.25,"Wipptiere":0.9,
       "Spielhäuser":2.4,"Klettern":2.8,"Sandspiel":0.35,"Balancieren":0.4,"Fallschutz":0.04};
     return d[eq.cat]||1.5;
   }
 
+  // Scene setup – ONCE on mount, updated on data changes
   useEffect(()=>{
-    if(view!=="3d"||!threeContainerRef.current) return;
-
+    if(!threeContainerRef.current) return;
     const container=threeContainerRef.current;
+
+    // CRITICAL: remove any residual children from prior renders
     while(container.firstChild) container.removeChild(container.firstChild);
 
-    const W=container.clientWidth, H=container.clientHeight||500;
+    const W=container.clientWidth||800, H=container.clientHeight||500;
 
-    // Scene
     const scene=new THREE.Scene();
     scene.background=new THREE.Color("#B8D5E8");
     scene.fog=new THREE.Fog("#B8D5E8",80,250);
 
-    // Camera
     const camera=new THREE.PerspectiveCamera(50,W/H,0.1,500);
     camera.position.set(22,18,22);
     camera.lookAt(0,1.5,0);
 
-    // Renderer
-    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,preserveDrawingBuffer:true});
     renderer.setSize(W,H);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
     renderer.shadowMap.enabled=true;
@@ -1336,7 +1364,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     renderer.outputColorSpace=THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
-    // Lighting – sun + sky (with Earth-like ambient)
+    // Lighting
     const hemi=new THREE.HemisphereLight(0xcfe2ff,0x6b7a52,0.55);
     scene.add(hemi);
     const sun=new THREE.DirectionalLight(0xffffff,2.1);
@@ -1347,332 +1375,26 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     sun.shadow.camera.near=1; sun.shadow.camera.far=120;
     sun.shadow.bias=-0.0005; sun.shadow.normalBias=0.03;
     scene.add(sun);
-    // Subtle fill from opposite side
     const fill=new THREE.DirectionalLight(0xaabde0,0.35);
     fill.position.set(-20,15,-10); scene.add(fill);
 
     // Ground
     const groundSize=100;
-    const groundGeo=new THREE.PlaneGeometry(groundSize,groundSize,1,1);
-    const groundMat=new THREE.MeshStandardMaterial({color:"#87986D",roughness:.95,metalness:0});
-    const ground=new THREE.Mesh(groundGeo,groundMat);
+    const groundMat=new THREE.MeshStandardMaterial({color:"#87986D",roughness:.95});
+    const ground=new THREE.Mesh(new THREE.PlaneGeometry(groundSize,groundSize),groundMat);
     ground.rotation.x=-Math.PI/2; ground.receiveShadow=true;
     scene.add(ground);
-    // Grid (subtle)
     const grid=new THREE.GridHelper(groundSize,50,0x3a4a35,0x5d7052);
     grid.material.opacity=.28; grid.material.transparent=true;
-    grid.position.y=0.005;
-    scene.add(grid);
+    grid.position.y=0.005; scene.add(grid);
 
-    // Lat/lng → local XZ (1 unit = 1m)
-    const mapCenter=projectCenter;
-    const mPerLat=111320;
-    const mPerLng=111320*Math.cos(mapCenter.lat*Math.PI/180);
-    const toLocal=(lat,lng)=>[(lng-mapCenter.lng)*mPerLng,(lat-mapCenter.lat)*mPerLat];
+    // Dynamic group for equipment + fall zones + obstacles
+    const worldGroup=new THREE.Group();
+    scene.add(worldGroup);
 
-    // Material helpers
-    const metalPost=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.65,roughness:.3});
-    const plastic=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.05,roughness:.55});
-    const wood=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.02,roughness:.82});
-    const rubber=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.1,roughness:.85});
-
-    /* ── Detaillierte Modelle pro Kategorie ── */
-    function buildEqMesh(eq,pl){
-      const g=new THREE.Group();
-      g.userData={eqId:eq.id,placedId:pl.id};
-      const [w,d]=eq.size||[2,2]; // width, depth in meters
-      const height=parseHeight(eq);
-      const col=eq.color||"#3B82F6";
-      const isSel=selected&&selected.type==="eq"&&selected.id===pl.id;
-
-      if(eq.cat==="Schaukeln"){
-        const frameH=Math.max(height,2.0);
-        const frameMat=metalPost("#6B7B8C");
-        const chainMat=metalPost("#4B5563");
-        const seatMat=rubber("#1F2937");
-        // A-frame: 4 legs angled inward at top
-        const legLen=Math.sqrt(frameH*frameH+0.8*0.8);
-        const legAngle=Math.atan2(0.8,frameH);
-        [[-w/2, d/2-.2],[ w/2, d/2-.2],[-w/2,-d/2+.2],[ w/2,-d/2+.2]].forEach(([x,z])=>{
-          const leg=new THREE.Mesh(new THREE.CylinderGeometry(.065,.075,legLen,10),frameMat);
-          leg.position.set(x*0.95,frameH/2,z);
-          // Tilt toward center along x
-          leg.rotation.z=Math.sign(x)*legAngle*0.6;
-          leg.rotation.x=-Math.sign(z)*legAngle*0.4;
-          leg.castShadow=true; g.add(leg);
-        });
-        // Top bar
-        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w*.9,10),frameMat);
-        bar.rotation.z=Math.PI/2; bar.position.y=frameH; bar.castShadow=true; g.add(bar);
-        // Seats
-        const isNest=/nest/i.test(eq.name||"");
-        const nSeats=isNest?1:(w>3.5?2:1);
-        if(isNest){
-          const seatR=0.55;
-          const nest=new THREE.Mesh(new THREE.TorusGeometry(seatR,.07,8,24),seatMat);
-          nest.rotation.x=Math.PI/2; nest.position.set(0,0.5,0); nest.castShadow=true; g.add(nest);
-          // chains
-          for(let i=0;i<4;i++){
-            const a=(i/4)*Math.PI*2;
-            const ch=new THREE.Mesh(new THREE.CylinderGeometry(.015,.015,frameH-0.5,6),chainMat);
-            ch.position.set(Math.cos(a)*seatR*.9,0.5+(frameH-0.5)/2,Math.sin(a)*seatR*.9);
-            g.add(ch);
-          }
-        } else {
-          const seatSpacing=nSeats>1?1.5:0;
-          for(let i=0;i<nSeats;i++){
-            const sx=(i-(nSeats-1)/2)*seatSpacing;
-            const seat=new THREE.Mesh(new THREE.BoxGeometry(.55,.07,.22),seatMat);
-            seat.position.set(sx,0.55,0); seat.castShadow=true; g.add(seat);
-            // 2 chains per seat
-            [-0.22,0.22].forEach(cx=>{
-              const ch=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,frameH-0.55,6),chainMat);
-              ch.position.set(sx+cx,0.55+(frameH-0.55)/2,0);
-              g.add(ch);
-            });
-          }
-        }
-      }
-      else if(eq.cat==="Rutschen"){
-        const platH=Math.max(height,1.2);
-        const slideLen=Math.max(d,platH*1.8);
-        const slideColor=plastic(col);
-        const postMat=metalPost("#6B7B8C");
-        const woodPlat=wood("#C69A5A");
-        // Platform
-        const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.1,1.2),woodPlat);
-        plat.position.set(-slideLen/2+0.6,platH,0); plat.castShadow=true; plat.receiveShadow=true;
-        g.add(plat);
-        // 4 posts under platform
-        [[-0.55,-0.55],[0.55,-0.55],[-0.55,0.55],[0.55,0.55]].forEach(([x,z])=>{
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,platH,8),postMat);
-          p.position.set(-slideLen/2+0.6+x,platH/2,z); p.castShadow=true; g.add(p);
-        });
-        // Slide bed (inclined)
-        const slideAngle=Math.atan2(platH,slideLen-0.6);
-        const bed=new THREE.Mesh(new THREE.BoxGeometry(slideLen-0.6,.08,.7),slideColor);
-        bed.position.set(0,platH/2,0);
-        bed.rotation.z=slideAngle;
-        bed.castShadow=true; g.add(bed);
-        // Side rails
-        [-0.38,0.38].forEach(sz=>{
-          const r=new THREE.Mesh(new THREE.BoxGeometry(slideLen-0.6,.12,.05),slideColor);
-          r.position.set(0,platH/2+.06,sz);
-          r.rotation.z=slideAngle;
-          r.castShadow=true; g.add(r);
-        });
-        // Ladder on left end
-        const ladder=new THREE.Mesh(new THREE.BoxGeometry(.08,platH,.5),postMat);
-        ladder.position.set(-slideLen/2+0.6-0.5,platH/2,0); g.add(ladder);
-        for(let i=0;i<Math.floor(platH/0.3);i++){
-          const rung=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,.5,6),postMat);
-          rung.rotation.z=Math.PI/2;
-          rung.position.set(-slideLen/2+0.6-0.5,0.2+i*0.3,0);
-          g.add(rung);
-        }
-      }
-      else if(eq.cat==="Karussell"){
-        const r=Math.max(w,d)/2;
-        const discH=0.18;
-        const disc=new THREE.Mesh(new THREE.CylinderGeometry(r,r,discH,32),plastic(col));
-        disc.position.y=discH/2; disc.castShadow=true; disc.receiveShadow=true; g.add(disc);
-        const rim=new THREE.Mesh(new THREE.TorusGeometry(r,.04,8,32),metalPost("#9CA3AF"));
-        rim.rotation.x=Math.PI/2; rim.position.y=discH; g.add(rim);
-        // Center pole
-        const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.1,1.0,10),metalPost("#6B7B8C"));
-        pole.position.y=discH+0.5; g.add(pole);
-        // Handles (4)
-        for(let i=0;i<4;i++){
-          const a=(i/4)*Math.PI*2;
-          const h=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,1,6),metalPost("#6B7B8C"));
-          h.position.set(Math.cos(a)*r*0.8,discH+0.5,Math.sin(a)*r*0.8);
-          g.add(h);
-          const top=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,r*0.4,6),metalPost("#6B7B8C"));
-          top.rotation.z=Math.PI/2; top.rotation.y=-a;
-          top.position.set(Math.cos(a)*r*0.6,discH+1.0,Math.sin(a)*r*0.6);
-          g.add(top);
-        }
-      }
-      else if(eq.cat==="Wipptiere"){
-        const seatH=0.55;
-        // Central pivot
-        const pivot=new THREE.Mesh(new THREE.CylinderGeometry(.12,.15,.2,12),metalPost("#6B7B8C"));
-        pivot.position.y=0.1; g.add(pivot);
-        const spring=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.35,8),metalPost("#4B5563"));
-        spring.position.y=0.375; g.add(spring);
-        // Animal body
-        const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.6,8,12),plastic(col));
-        body.rotation.z=Math.PI/2;
-        body.position.y=seatH+.1; body.castShadow=true; g.add(body);
-        // Handlebar
-        const hb=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.35,6),metalPost("#6B7B8C"));
-        hb.rotation.x=Math.PI/2; hb.position.set(0.3,seatH+.35,0); g.add(hb);
-      }
-      else if(eq.cat==="Spielhäuser"){
-        const baseH=Math.max(height*0.7,1.8);
-        const base=new THREE.Mesh(new THREE.BoxGeometry(w,baseH,d),wood("#C69A5A"));
-        base.position.y=baseH/2; base.castShadow=true; base.receiveShadow=true; g.add(base);
-        // Window
-        const win=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.06),plastic("#3B82F6"));
-        win.position.set(0,baseH*0.65,d/2+0.02); g.add(win);
-        // Roof (hip)
-        const roofH=baseH*0.55;
-        const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.72,roofH,4),wood("#8B4513"));
-        roof.position.y=baseH+roofH/2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
-      }
-      else if(eq.cat==="Klettern"){
-        const frameH=Math.max(height,2.2);
-        const postMat=metalPost("#6B7B8C");
-        const ropeMat=rubber("#1F2937");
-        // 4 outer posts
-        [[-w/2,-d/2],[w/2,-d/2],[-w/2,d/2],[w/2,d/2]].forEach(([x,z])=>{
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,frameH,8),postMat);
-          p.position.set(x,frameH/2,z); p.castShadow=true; g.add(p);
-        });
-        // Top frame
-        [[0,-d/2],[0,d/2]].forEach(([x,z])=>{
-          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,w,8),postMat);
-          bar.rotation.z=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
-        });
-        [[-w/2,0],[w/2,0]].forEach(([x,z])=>{
-          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,d,8),postMat);
-          bar.rotation.x=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
-        });
-        // Rope net inside (simplified: diagonal bars)
-        for(let i=-1;i<=1;i+=0.5){
-          const rope=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,Math.sqrt(w*w+frameH*frameH)*0.9,6),ropeMat);
-          rope.position.set(i*w/3,frameH/2,0);
-          rope.rotation.z=Math.atan2(frameH,w);
-          g.add(rope);
-        }
-      }
-      else if(eq.cat==="Sandspiel"){
-        const edgeH=0.35;
-        // Wooden border (4 sides)
-        const edgeMat=wood("#A8763E");
-        [[0,-d/2,w,0.1,0],[0,d/2,w,0.1,0],[-w/2,0,0.1,d,Math.PI/2],[w/2,0,0.1,d,Math.PI/2]].forEach(([x,z,bw,bd,ry])=>{
-          const e=new THREE.Mesh(new THREE.BoxGeometry(bw,edgeH,bd),edgeMat);
-          e.position.set(x,edgeH/2,z); e.castShadow=true; e.receiveShadow=true; g.add(e);
-        });
-        // Sand inside
-        const sand=new THREE.Mesh(new THREE.BoxGeometry(w-0.2,0.08,d-0.2),
-          new THREE.MeshStandardMaterial({color:"#E4C785",roughness:.98}));
-        sand.position.y=0.3; sand.receiveShadow=true; g.add(sand);
-      }
-      else if(eq.cat==="Balancieren"){
-        const beamLen=Math.max(w,d);
-        const beamMat=wood("#A8763E");
-        const beam=new THREE.Mesh(new THREE.BoxGeometry(beamLen,.14,.16),beamMat);
-        beam.position.y=0.45; beam.castShadow=true; g.add(beam);
-        // Support posts
-        [[-beamLen/2+0.1,0],[beamLen/2-0.1,0]].forEach(([x,z])=>{
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,0.45,8),metalPost("#6B7B8C"));
-          p.position.set(x,0.225,z); p.castShadow=true; g.add(p);
-        });
-      }
-      else if(eq.cat==="Fallschutz"){
-        const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85});
-        const pad=new THREE.Mesh(new THREE.BoxGeometry(w,.04,d),mat);
-        pad.position.y=0.02; pad.receiveShadow=true; g.add(pad);
-      }
-      else {
-        const b=new THREE.Mesh(new THREE.BoxGeometry(w,height,d),plastic(col));
-        b.position.y=height/2; b.castShadow=true; g.add(b);
-      }
-
-      // Position & rotate
-      const [x,z]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
-      g.position.set(x,0,-z);
-      g.rotation.y=(pl.rot||0)*Math.PI/180;
-
-      // Selection halo
-      if(isSel){
-        const rSel=Math.max(w,d)/2+0.4;
-        const halo=new THREE.Mesh(
-          new THREE.RingGeometry(rSel,rSel+0.12,48),
-          new THREE.MeshBasicMaterial({color:"#D4A853",side:THREE.DoubleSide,transparent:true,opacity:.9})
-        );
-        halo.rotation.x=-Math.PI/2; halo.position.y=0.03;
-        g.add(halo);
-      }
-      return g;
-    }
-
-    // Build equipment + fall zones
-    placed.forEach(pl=>{
-      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
-      scene.add(buildEqMesh(eq,pl));
-      const zone=calcFallZone(eq);
-      if(zone){
-        const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
-        const inConflict=conflicts.some(c=>c.includes(pl.id));
-        const zcol=inConflict?"#DC2626":"#F59E0B";
-        const fillMat=new THREE.MeshBasicMaterial({color:zcol,transparent:true,opacity:.22,side:THREE.DoubleSide,depthWrite:false});
-        const edgeMat=new THREE.LineBasicMaterial({color:zcol,linewidth:2,transparent:true,opacity:.85});
-        if(zone.shape==="circle"){
-          const fill=new THREE.Mesh(new THREE.CircleGeometry(zone.r,48),fillMat);
-          fill.rotation.x=-Math.PI/2; fill.position.set(lx,0.015,-lz); scene.add(fill);
-          const edge=new THREE.Line(new THREE.BufferGeometry().setFromPoints(
-            Array.from({length:49},(_,i)=>{const a=i/48*Math.PI*2;return new THREE.Vector3(Math.cos(a)*zone.r,0.02,Math.sin(a)*zone.r);})
-          ),edgeMat);
-          edge.position.set(lx,0,-lz); scene.add(edge);
-        } else {
-          const fill=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),fillMat);
-          fill.rotation.x=-Math.PI/2; fill.rotation.z=-(pl.rot||0)*Math.PI/180;
-          fill.position.set(lx,0.015,-lz); scene.add(fill);
-          const hw=zone.w/2, hh=zone.h/2;
-          const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh],[-hw,-hh]];
-          const rot=(pl.rot||0)*Math.PI/180;
-          const pts=corners.map(([x,z])=>{
-            const rx=x*Math.cos(rot)-z*Math.sin(rot);
-            const rz=x*Math.sin(rot)+z*Math.cos(rot);
-            return new THREE.Vector3(lx+rx,0.02,-lz-rz);
-          });
-          const edge=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),edgeMat);
-          scene.add(edge);
-        }
-      }
-    });
-
-    // Obstacles
-    obstacles.forEach(ob=>{
-      const [x,z]=toLocal(ob.lat,ob.lng);
-      if(ob.type==="tree"){
-        const r=ob.r||3;
-        const trunkH=2.5;
-        const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.2,.3,trunkH,10),wood("#5C3317"));
-        trunk.position.set(x,trunkH/2,-z); trunk.castShadow=true; scene.add(trunk);
-        const crown=new THREE.Mesh(new THREE.SphereGeometry(r,18,14),
-          new THREE.MeshStandardMaterial({color:"#3F8C3F",roughness:.85}));
-        crown.position.set(x,trunkH+r*0.6,-z); crown.castShadow=true; crown.receiveShadow=true; scene.add(crown);
-      } else if(ob.type==="building"){
-        const bw=ob.w||6, bd=ob.h||4;
-        const bh=3.2;
-        const b=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,bd),
-          new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.85}));
-        b.position.set(x,bh/2,-z); b.castShadow=true; b.receiveShadow=true; scene.add(b);
-        const roof=new THREE.Mesh(new THREE.BoxGeometry(bw+0.3,0.3,bd+0.3),wood("#8B4513"));
-        roof.position.set(x,bh+0.15,-z); roof.castShadow=true; scene.add(roof);
-      }
-    });
-
-    // Auto-fit camera to placed items on load
-    if(placed.length>0){
-      const bounds=new THREE.Box3();
-      placed.forEach(pl=>{
-        const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
-        bounds.expandByPoint(new THREE.Vector3(lx,0,-lz));
-      });
-      const center=bounds.getCenter(new THREE.Vector3());
-      const size=bounds.getSize(new THREE.Vector3());
-      const dist=Math.max(size.x,size.z,12)*1.8+10;
-      camera.position.set(center.x+dist*0.7,dist*0.6,center.z+dist*0.7);
-      camera.lookAt(center.x,1.5,center.z);
-      targetRef.current.copy(new THREE.Vector3(center.x,1.5,center.z));
-    }
-
-    /* ── Manuelle Orbit-Controls (Maus) ── */
-    const target=targetRef.current;
+    // Orbit-Controls state
+    const target=new THREE.Vector3(0,1.5,0);
+    targetRef.current.copy(target);
     let radius=camera.position.distanceTo(target);
     let theta=Math.atan2(camera.position.x-target.x,camera.position.z-target.z);
     let phi=Math.acos(Math.max(-0.99,Math.min(0.99,(camera.position.y-target.y)/radius)));
@@ -1686,19 +1408,17 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
     let dragging=false, panning=false, lastX=0, lastY=0;
     const dom=renderer.domElement;
-    dom.style.cursor="grab";
+    dom.style.cursor="grab"; dom.style.display="block";
     const onDown=(e)=>{
       dragging=true; panning=e.button===2||e.shiftKey;
       lastX=e.clientX; lastY=e.clientY;
-      dom.style.cursor=panning?"move":"grabbing";
-      e.preventDefault();
+      dom.style.cursor=panning?"move":"grabbing"; e.preventDefault();
     };
     const onMove=(e)=>{
       if(!dragging) return;
       const dx=e.clientX-lastX, dy=e.clientY-lastY;
       lastX=e.clientX; lastY=e.clientY;
       if(panning){
-        // pan target in camera's right/up plane
         const forward=new THREE.Vector3().subVectors(target,camera.position).normalize();
         const right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
         const up=new THREE.Vector3().crossVectors(right,forward).normalize();
@@ -1724,31 +1444,69 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     dom.addEventListener("wheel",onWheel,{passive:false});
     dom.addEventListener("contextmenu",onContext);
 
-    // Render loop (only when needed, but a steady loop is cheap for small scenes)
     function animate(){
       animRef.current=requestAnimationFrame(animate);
       renderer.render(scene,camera);
     }
     animate();
 
-    threeRef.current={scene,camera,renderer};
+    // Expose to outside: reset camera, render, export photo
+    function resetCamera(){
+      // Fit to content
+      const box=new THREE.Box3().setFromObject(worldGroup);
+      if(!box.isEmpty()){
+        const c=box.getCenter(new THREE.Vector3());
+        const s=box.getSize(new THREE.Vector3());
+        const dist=Math.max(s.x,s.z,12)*1.8+10;
+        target.copy(c); target.y=1.5;
+        radius=dist; theta=Math.PI/4; phi=Math.PI/3;
+        updateCamera();
+      } else {
+        target.set(0,1.5,0); radius=30; theta=Math.PI/4; phi=Math.PI/3; updateCamera();
+      }
+    }
+    function exportPhoto(){
+      // Render to 4K buffer
+      const prevSize={w:W,h:H};
+      const targetW=3840, targetH=2160;
+      const savedPixelRatio=renderer.getPixelRatio();
+      renderer.setPixelRatio(1);
+      renderer.setSize(targetW,targetH);
+      camera.aspect=targetW/targetH; camera.updateProjectionMatrix();
+      renderer.render(scene,camera);
+      const url=dom.toDataURL("image/png");
+      // Restore
+      renderer.setPixelRatio(savedPixelRatio);
+      renderer.setSize(prevSize.w,prevSize.h);
+      camera.aspect=prevSize.w/prevSize.h; camera.updateProjectionMatrix();
+      renderer.render(scene,camera);
+      const a=document.createElement("a");
+      a.href=url; a.download=`PlayQuote-3D-${Date.now()}.png`;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    function renderOnce(){ renderer.render(scene,camera); }
+
+    threeRef.current={scene,camera,renderer,worldGroup,resetCamera,exportPhoto,render:renderOnce};
+
     const onResize=()=>{
       if(!container) return;
-      const w=container.clientWidth, h=container.clientHeight||500;
+      const w=container.clientWidth||800, h=container.clientHeight||500;
       camera.aspect=w/h; camera.updateProjectionMatrix();
       renderer.setSize(w,h);
     };
     window.addEventListener("resize",onResize);
+    // Fit on first mount
+    setTimeout(()=>{ if(threeRef.current===null) return; onResize(); },0);
 
     return ()=>{
-      if(animRef.current) cancelAnimationFrame(animRef.current);
+      if(animRef.current){ cancelAnimationFrame(animRef.current); animRef.current=null; }
       window.removeEventListener("resize",onResize);
       window.removeEventListener("pointermove",onMove);
       window.removeEventListener("pointerup",onUp);
       dom.removeEventListener("pointerdown",onDown);
       dom.removeEventListener("wheel",onWheel);
       dom.removeEventListener("contextmenu",onContext);
-      renderer.dispose();
+      // Full scene cleanup
       scene.traverse(o=>{
         if(o.geometry) o.geometry.dispose();
         if(o.material){
@@ -1756,8 +1514,303 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           else o.material.dispose();
         }
       });
+      renderer.dispose();
+      try{ renderer.forceContextLoss(); }catch(e){}
+      if(dom.parentNode) dom.parentNode.removeChild(dom);
+      threeRef.current=null;
     };
-  },[view,placed,obstacles,equipment,selected,conflicts]);
+  // Run ONCE on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
+
+  // Update scene contents when data changes (no rebuild of renderer/scene!)
+  useEffect(()=>{
+    if(!threeRef.current) return;
+    const { scene, worldGroup } = threeRef.current;
+    // Clear previous contents
+    while(worldGroup.children.length){
+      const o=worldGroup.children[0];
+      worldGroup.remove(o);
+      o.traverse(x=>{
+        if(x.geometry) x.geometry.dispose();
+        if(x.material){
+          if(Array.isArray(x.material)) x.material.forEach(m=>m.dispose());
+          else x.material.dispose();
+        }
+      });
+    }
+
+    const mapCenter=projectCenter;
+    const mPerLat=111320;
+    const mPerLng=111320*Math.cos(mapCenter.lat*Math.PI/180);
+    const toLocal=(lat,lng)=>[(lng-mapCenter.lng)*mPerLng,(lat-mapCenter.lat)*mPerLat];
+
+    const metalPost=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.65,roughness:.3});
+    const plastic=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.05,roughness:.55});
+    const wood=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.02,roughness:.82});
+    const rubber=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.1,roughness:.85});
+
+    /* Fallschutz-Bodenflächen (EN 1177) - unter jedem Gerät mit fallZone > 0.6m */
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      const zone=calcFallZone(eq); if(!zone) return;
+      const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+      const surfaceMat=new THREE.MeshStandardMaterial({color:"#2A1F18",roughness:.95,metalness:0});
+      if(zone.shape==="circle"){
+        const fp=new THREE.Mesh(new THREE.CircleGeometry(zone.r,48),surfaceMat);
+        fp.rotation.x=-Math.PI/2; fp.position.set(lx,0.008,-lz); fp.receiveShadow=true;
+        worldGroup.add(fp);
+      } else {
+        const fp=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),surfaceMat);
+        fp.rotation.x=-Math.PI/2; fp.rotation.z=-(pl.rot||0)*Math.PI/180;
+        fp.position.set(lx,0.008,-lz); fp.receiveShadow=true;
+        worldGroup.add(fp);
+      }
+    });
+
+    /* Equipment Meshes */
+    function buildEqMesh(eq,pl){
+      const g=new THREE.Group();
+      const [w,d]=eq.size||[2,2];
+      const height=parseHeight(eq);
+      const col=eq.color||"#3B82F6";
+
+      if(eq.cat==="Schaukeln"){
+        const frameH=Math.max(height,2.0);
+        const frameMat=metalPost("#6B7B8C");
+        const chainMat=metalPost("#4B5563");
+        const seatMat=rubber("#1F2937");
+        const legLen=Math.sqrt(frameH*frameH+0.8*0.8);
+        const legAngle=Math.atan2(0.8,frameH);
+        [[-w/2, d/2-.2],[ w/2, d/2-.2],[-w/2,-d/2+.2],[ w/2,-d/2+.2]].forEach(([x,z])=>{
+          const leg=new THREE.Mesh(new THREE.CylinderGeometry(.065,.075,legLen,10),frameMat);
+          leg.position.set(x*0.95,frameH/2,z);
+          leg.rotation.z=Math.sign(x)*legAngle*0.6;
+          leg.rotation.x=-Math.sign(z)*legAngle*0.4;
+          leg.castShadow=true; g.add(leg);
+        });
+        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w*.9,10),frameMat);
+        bar.rotation.z=Math.PI/2; bar.position.y=frameH; bar.castShadow=true; g.add(bar);
+        const isNest=/nest/i.test(eq.name||"");
+        const nSeats=isNest?1:(w>3.5?2:1);
+        if(isNest){
+          const seatR=0.55;
+          const nest=new THREE.Mesh(new THREE.TorusGeometry(seatR,.07,8,24),seatMat);
+          nest.rotation.x=Math.PI/2; nest.position.set(0,0.5,0); nest.castShadow=true; g.add(nest);
+          for(let i=0;i<4;i++){
+            const a=(i/4)*Math.PI*2;
+            const ch=new THREE.Mesh(new THREE.CylinderGeometry(.015,.015,frameH-0.5,6),chainMat);
+            ch.position.set(Math.cos(a)*seatR*.9,0.5+(frameH-0.5)/2,Math.sin(a)*seatR*.9);
+            g.add(ch);
+          }
+        } else {
+          const seatSpacing=nSeats>1?1.5:0;
+          for(let i=0;i<nSeats;i++){
+            const sx=(i-(nSeats-1)/2)*seatSpacing;
+            const seat=new THREE.Mesh(new THREE.BoxGeometry(.55,.07,.22),seatMat);
+            seat.position.set(sx,0.55,0); seat.castShadow=true; g.add(seat);
+            [-0.22,0.22].forEach(cx=>{
+              const ch=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,frameH-0.55,6),chainMat);
+              ch.position.set(sx+cx,0.55+(frameH-0.55)/2,0);
+              g.add(ch);
+            });
+          }
+        }
+      }
+      else if(eq.cat==="Rutschen"){
+        // KOMPAN Slides typically: elevated platform with ladder/steps on one side,
+        // curved/straight slide bed with raised side rails, exit runout at bottom
+        const platH=Math.max(height,1.2);
+        const slideLen=Math.max(d,platH*2.2);
+        const slideColor=plastic(col);
+        const postMat=metalPost("#6B7B8C");
+        const woodPlat=wood("#C69A5A");
+        const railsMat=plastic("#FACC15");
+        // Platform (top)
+        const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.1,1.1),woodPlat);
+        plat.position.set(-slideLen/2+0.6,platH,0);
+        plat.castShadow=true; plat.receiveShadow=true; g.add(plat);
+        // 4 posts under platform
+        [[-0.55,-0.5],[0.55,-0.5],[-0.55,0.5],[0.55,0.5]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,platH,8),postMat);
+          p.position.set(-slideLen/2+0.6+x,platH/2,z); p.castShadow=true; g.add(p);
+        });
+        // Platform guard rails (behind slide entry)
+        [-0.5,0.5].forEach(z=>{
+          const rail=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.6,.05),railsMat);
+          rail.position.set(-slideLen/2+0.6,platH+.3,z);
+          rail.castShadow=true; g.add(rail);
+        });
+        // Back rail
+        const back=new THREE.Mesh(new THREE.BoxGeometry(.05,0.8,1.1),railsMat);
+        back.position.set(-slideLen/2,platH+.4,0); g.add(back);
+        // Slide bed: shaped path (curve via segmented boxes for realistic look)
+        const bedSegs=12;
+        const slideMat=new THREE.MeshStandardMaterial({color:col,metalness:.35,roughness:.35,side:THREE.DoubleSide});
+        // Create a curved slide using Shape + ExtrudeGeometry
+        const bedW=0.65;
+        // Straight inclined slide (simpler, reliable)
+        const slideAngle=Math.atan2(platH-0.1,slideLen-0.6);
+        const bedLen=Math.sqrt((slideLen-0.6)*(slideLen-0.6)+(platH-0.1)*(platH-0.1));
+        const bed=new THREE.Mesh(new THREE.BoxGeometry(bedLen,.06,bedW),slideMat);
+        bed.position.set(-slideLen/2+0.6+ (slideLen-0.6)/2, (platH+0.1)/2, 0);
+        bed.rotation.z=slideAngle;
+        bed.castShadow=true; bed.receiveShadow=true; g.add(bed);
+        // Side edges / splash guards
+        [-(bedW/2+0.04), bedW/2+0.04].forEach(sz=>{
+          const side=new THREE.Mesh(new THREE.BoxGeometry(bedLen,.12,.06),slideMat);
+          side.position.set(-slideLen/2+0.6+(slideLen-0.6)/2,(platH+0.1)/2+.08,sz);
+          side.rotation.z=slideAngle;
+          side.castShadow=true; g.add(side);
+        });
+        // Runout (flat section at bottom)
+        const runout=new THREE.Mesh(new THREE.BoxGeometry(.7,.05,bedW+.1),slideMat);
+        runout.position.set(slideLen/2-0.15,.05,0);
+        runout.castShadow=true; g.add(runout);
+        // Ladder on left side
+        const ladLen=platH+.1;
+        const ladSide=new THREE.Mesh(new THREE.BoxGeometry(.06,ladLen,.04),postMat);
+        ladSide.position.set(-slideLen/2+0.2,ladLen/2,-.3); g.add(ladSide);
+        const ladSide2=new THREE.Mesh(new THREE.BoxGeometry(.06,ladLen,.04),postMat);
+        ladSide2.position.set(-slideLen/2+0.2,ladLen/2,.3); g.add(ladSide2);
+        for(let i=1;i<=Math.floor(platH/0.27);i++){
+          const rung=new THREE.Mesh(new THREE.CylinderGeometry(.022,.022,.6,6),postMat);
+          rung.rotation.x=Math.PI/2;
+          rung.position.set(-slideLen/2+0.2,i*0.27,0);
+          g.add(rung);
+        }
+      }
+      else if(eq.cat==="Karussell"){
+        const r=Math.max(w,d)/2;
+        const discH=0.18;
+        const disc=new THREE.Mesh(new THREE.CylinderGeometry(r,r,discH,32),plastic(col));
+        disc.position.y=discH/2; disc.castShadow=true; disc.receiveShadow=true; g.add(disc);
+        const rim=new THREE.Mesh(new THREE.TorusGeometry(r,.04,8,32),metalPost("#9CA3AF"));
+        rim.rotation.x=Math.PI/2; rim.position.y=discH; g.add(rim);
+        const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.1,1.0,10),metalPost("#6B7B8C"));
+        pole.position.y=discH+0.5; g.add(pole);
+        for(let i=0;i<4;i++){
+          const a=(i/4)*Math.PI*2;
+          const h=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,1,6),metalPost("#6B7B8C"));
+          h.position.set(Math.cos(a)*r*0.8,discH+0.5,Math.sin(a)*r*0.8); g.add(h);
+          const top=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,r*0.4,6),metalPost("#6B7B8C"));
+          top.rotation.z=Math.PI/2; top.rotation.y=-a;
+          top.position.set(Math.cos(a)*r*0.6,discH+1.0,Math.sin(a)*r*0.6);
+          g.add(top);
+        }
+      }
+      else if(eq.cat==="Wipptiere"){
+        const seatH=0.55;
+        const pivot=new THREE.Mesh(new THREE.CylinderGeometry(.12,.15,.2,12),metalPost("#6B7B8C"));
+        pivot.position.y=0.1; g.add(pivot);
+        const spring=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.35,8),metalPost("#4B5563"));
+        spring.position.y=0.375; g.add(spring);
+        const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.6,8,12),plastic(col));
+        body.rotation.z=Math.PI/2;
+        body.position.y=seatH+.1; body.castShadow=true; g.add(body);
+      }
+      else if(eq.cat==="Spielhäuser"){
+        const baseH=Math.max(height*0.7,1.8);
+        const base=new THREE.Mesh(new THREE.BoxGeometry(w,baseH,d),wood("#C69A5A"));
+        base.position.y=baseH/2; base.castShadow=true; base.receiveShadow=true; g.add(base);
+        const win=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.06),plastic("#3B82F6"));
+        win.position.set(0,baseH*0.65,d/2+0.02); g.add(win);
+        const roofH=baseH*0.55;
+        const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.72,roofH,4),wood("#8B4513"));
+        roof.position.y=baseH+roofH/2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
+      }
+      else if(eq.cat==="Klettern"){
+        const frameH=Math.max(height,2.2);
+        const postMat=metalPost("#6B7B8C");
+        const ropeMat=rubber("#1F2937");
+        [[-w/2,-d/2],[w/2,-d/2],[-w/2,d/2],[w/2,d/2]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,frameH,8),postMat);
+          p.position.set(x,frameH/2,z); p.castShadow=true; g.add(p);
+        });
+        [[0,-d/2],[0,d/2]].forEach(([x,z])=>{
+          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,w,8),postMat);
+          bar.rotation.z=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
+        });
+        [[-w/2,0],[w/2,0]].forEach(([x,z])=>{
+          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,d,8),postMat);
+          bar.rotation.x=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
+        });
+        for(let i=-1;i<=1;i+=0.5){
+          const rope=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,Math.sqrt(w*w+frameH*frameH)*0.9,6),ropeMat);
+          rope.position.set(i*w/3,frameH/2,0);
+          rope.rotation.z=Math.atan2(frameH,w);
+          g.add(rope);
+        }
+      }
+      else if(eq.cat==="Sandspiel"){
+        const edgeH=0.35;
+        const edgeMat=wood("#A8763E");
+        [[0,-d/2,w,0.1],[0,d/2,w,0.1],[-w/2,0,0.1,d],[w/2,0,0.1,d]].forEach(([x,z,bw,bd])=>{
+          const e=new THREE.Mesh(new THREE.BoxGeometry(bw,edgeH,bd),edgeMat);
+          e.position.set(x,edgeH/2,z); e.castShadow=true; e.receiveShadow=true; g.add(e);
+        });
+        const sand=new THREE.Mesh(new THREE.BoxGeometry(w-0.2,0.08,d-0.2),
+          new THREE.MeshStandardMaterial({color:"#E4C785",roughness:.98}));
+        sand.position.y=0.3; sand.receiveShadow=true; g.add(sand);
+      }
+      else if(eq.cat==="Balancieren"){
+        const beamLen=Math.max(w,d);
+        const beamMat=wood("#A8763E");
+        const beam=new THREE.Mesh(new THREE.BoxGeometry(beamLen,.14,.16),beamMat);
+        beam.position.y=0.45; beam.castShadow=true; g.add(beam);
+        [[-beamLen/2+0.1,0],[beamLen/2-0.1,0]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,0.45,8),metalPost("#6B7B8C"));
+          p.position.set(x,0.225,z); p.castShadow=true; g.add(p);
+        });
+      }
+      else {
+        const b=new THREE.Mesh(new THREE.BoxGeometry(w,height,d),plastic(col));
+        b.position.y=height/2; b.castShadow=true; g.add(b);
+      }
+
+      const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+      g.position.set(lx,0,-lz);
+      g.rotation.y=(pl.rot||0)*Math.PI/180;
+      return g;
+    }
+
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      worldGroup.add(buildEqMesh(eq,pl));
+    });
+
+    // Obstacles
+    obstacles.forEach(ob=>{
+      const [lx,lz]=toLocal(ob.lat,ob.lng);
+      if(ob.type==="tree"){
+        const r=ob.r||3;
+        const trunkH=2.5;
+        const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.2,.3,trunkH,10),wood("#5C3317"));
+        trunk.position.set(lx,trunkH/2,-lz); trunk.castShadow=true; worldGroup.add(trunk);
+        const crown=new THREE.Mesh(new THREE.SphereGeometry(r,18,14),
+          new THREE.MeshStandardMaterial({color:"#3F8C3F",roughness:.85}));
+        crown.position.set(lx,trunkH+r*0.6,-lz); crown.castShadow=true; crown.receiveShadow=true; worldGroup.add(crown);
+      } else if(ob.type==="building"){
+        const bw=ob.w||6, bd=ob.h||4;
+        const bh=3.2;
+        const bgroup=new THREE.Group();
+        const b=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,bd),
+          new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.85}));
+        b.position.y=bh/2; b.castShadow=true; b.receiveShadow=true; bgroup.add(b);
+        const roof=new THREE.Mesh(new THREE.BoxGeometry(bw+0.3,0.3,bd+0.3),wood("#8B4513"));
+        roof.position.y=bh+0.15; roof.castShadow=true; bgroup.add(roof);
+        bgroup.position.set(lx,0,-lz);
+        bgroup.rotation.y=(ob.rot||0)*Math.PI/180;
+        worldGroup.add(bgroup);
+      }
+    });
+
+    // Auto-fit on first content if camera still at default
+    if(placed.length>0 && threeRef.current){
+      threeRef.current.resetCamera();
+    }
+  },[placed,obstacles,equipment]);
+
 
 
   /* ────── UI ────── */
@@ -1858,7 +1911,8 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
         {/* CENTER – Map / 3D */}
         <div style={{flex:1,background:"white",border:`1px solid ${T.border}`,borderRadius:12,position:"relative",overflow:"hidden",boxShadow:T.shadow}}>
-          {view==="2d"?(<>
+          {/* === 2D MAP VIEW (always in DOM, hidden when 3D active) === */}
+          <div style={{position:"absolute",inset:0,display:view==="2d"?"block":"none"}}>
             {/* Address search + map style switcher */}
             <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6,flexWrap:"wrap"}}>
               <div style={{display:"flex",background:"white",borderRadius:8,border:`1.5px solid ${T.border}`,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
@@ -1908,18 +1962,48 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
               </div>
             )}
 
+            {/* Conflict warning toast */}
+            {collisionWarning&&(
+              <div style={{position:"absolute",top:55,left:"50%",transform:"translateX(-50%)",zIndex:600,background:T.red,color:"white",padding:"8px 16px",borderRadius:8,boxShadow:"0 3px 12px rgba(220,38,38,.35)",fontSize:13,fontWeight:600,animation:"fadeIn .15s"}}>
+                ⚠️ Fallräume dürfen sich nicht überschneiden
+              </div>
+            )}
+
             {/* Legend */}
             <div style={{position:"absolute",bottom:30,left:10,zIndex:500,background:"white",padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:11,boxShadow:"0 2px 6px rgba(0,0,0,0.12)",display:"flex",flexDirection:"column",gap:4}}>
               <div style={{fontWeight:700,color:T.muted,fontSize:10,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>Legende</div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#F59E0B88",border:"1.5px dashed #F59E0B",borderRadius:2}}/>Fallraum EN 1176</div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#DC262655",border:"1.5px dashed #DC2626",borderRadius:2}}/>Konflikt</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#2A1F18",border:"1px solid #1A120D",borderRadius:2}}/>Fallschutz-Belag (EN 1177)</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#F59E0B66",border:"1.5px dashed #F59E0B",borderRadius:2}}/>Fallraum (EN 1176)</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#DC262644",border:"1.5px dashed #DC2626",borderRadius:2}}/>Konflikt</div>
             </div>
 
             {/* Map canvas */}
             <div ref={mapContainerRef} style={{width:"100%",height:"100%"}}/>
-          </>):(
-            <div ref={threeContainerRef} style={{width:"100%",height:"100%",background:"#87CEEB"}}/>
-          )}
+          </div>
+
+          {/* === 3D VIEW (always in DOM, hidden when 2D active) === */}
+          <div style={{position:"absolute",inset:0,display:view==="3d"?"block":"none"}}>
+            {/* 3D toolbar */}
+            <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6}}>
+              <button onClick={()=>{ if(threeRef.current?.resetCamera) threeRef.current.resetCamera(); }}
+                style={{padding:"7px 11px",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.12)"}}>
+                🎥 Ansicht zentrieren
+              </button>
+              <button onClick={()=>{ if(threeRef.current?.render) threeRef.current.render(); }}
+                style={{padding:"7px 11px",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.12)"}}>
+                🔄 Neu rendern
+              </button>
+              <button onClick={()=>{ if(threeRef.current?.exportPhoto) threeRef.current.exportPhoto(); }}
+                style={{padding:"7px 11px",background:T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.25)"}}>
+                📸 Foto exportieren (4K)
+              </button>
+            </div>
+            {/* Hint */}
+            <div style={{position:"absolute",bottom:10,left:10,zIndex:500,background:"rgba(255,255,255,.92)",padding:"7px 12px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:11,color:T.muted,pointerEvents:"none"}}>
+              🖱 Ziehen = drehen · Scrollrad = zoomen · Shift/Rechtsklick ziehen = verschieben
+            </div>
+            <div ref={threeContainerRef} style={{width:"100%",height:"100%",background:"#B8D5E8"}}/>
+          </div>
         </div>
 
         {/* RIGHT – Properties panel */}
