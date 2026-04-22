@@ -1142,19 +1142,69 @@ function RenderStudio({ sourceScene, sourceCamera, onClose }) {
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         rendererRef.current = renderer;
 
-        // Clone the source scene + camera for isolated rendering
-        const scene = sourceScene.clone(true);
-        // PMREM environment for IBL (simple procedural sky gradient)
-        const bg = new THREE.Color("#B8D5E8");
-        scene.background = bg;
-        scene.environment = null; // will be set below
+        // Build a CLEAN scene for path tracing — only solid Meshes with PBR materials.
+        // GridHelper, Lines, LineSegments, Points, and MeshBasicMaterial are NOT supported
+        // by the path tracer and cause "Cannot read properties of undefined" errors.
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color("#B8D5E8");
 
-        // Generate a simple HDR environment from a procedural sky
-        const pmremGen = new THREE.PMREMGenerator(renderer);
-        pmremGen.compileEquirectangularShader();
-        // Use a CubeTexture alternative: generate a gradient equirect texture
+        // Environment map for IBL
         const envTex = makeSkyEnv(renderer);
         scene.environment = envTex;
+
+        // Lights (neu hinzufügen, weil der Path-Tracer die Lichter der Quellszene nicht
+        // automatisch übernimmt — und Direct-Lights+HemiLight machen die Szene realistisch)
+        const hemi = new THREE.HemisphereLight(0xcfe2ff, 0x6b7a52, 0.7);
+        scene.add(hemi);
+        const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+        sun.position.set(30, 45, 20);
+        sun.castShadow = false; // path tracer macht Schatten selbst
+        scene.add(sun);
+
+        // Ground plane
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(100, 100),
+          new THREE.MeshStandardMaterial({ color: "#87986D", roughness: 0.95, metalness: 0 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        // Nur unterstützte Meshes aus der Quellszene übertragen
+        let meshCount = 0;
+        sourceScene.traverse((obj) => {
+          if (!obj.isMesh) return; // Skip Lines, GridHelper, Points, Lights, Groups etc.
+          if (!obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) return;
+          const srcMat = obj.material;
+          if (!srcMat) return;
+          const mat0 = Array.isArray(srcMat) ? srcMat[0] : srcMat;
+          // Fall protection is drawn as Ground, skip big ground/grid meshes from source
+          if (obj === ground) return;
+          // Skip any mesh that's just ring/outline or transparent (would break path tracer)
+          if (mat0.isMeshBasicMaterial) return;
+
+          // Deep copy the mesh with world transform baked in
+          obj.updateMatrixWorld();
+          const geom = obj.geometry.clone();
+          let newMat;
+          if (mat0.isMeshStandardMaterial || mat0.isMeshPhysicalMaterial) {
+            newMat = mat0.clone();
+          } else {
+            // Convert unknown materials to Standard for safety
+            newMat = new THREE.MeshStandardMaterial({
+              color: mat0.color || 0x888888,
+              roughness: 0.7,
+              metalness: 0,
+            });
+          }
+          const clone = new THREE.Mesh(geom, newMat);
+          clone.applyMatrix4(obj.matrixWorld);
+          scene.add(clone);
+          meshCount++;
+        });
+
+        if (meshCount === 0) {
+          throw new Error("Keine renderfähigen 3D-Objekte in der Szene gefunden. Bitte erst Geräte im Planer platzieren und die 3D-Ansicht öffnen, bevor Sie das Render-Studio starten.");
+        }
 
         // Clone camera and use same transform
         const camera = sourceCamera.clone();
