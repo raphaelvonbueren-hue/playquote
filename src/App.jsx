@@ -31,7 +31,19 @@ const AGES = ["Kleinkinder (1–3)","Kindergarten (3–6)","Schulkinder (6–12)
 const MATS = ["Robinie","Douglasie","KDI","Edelstahl","Pulverbeschichtet","Kombiniert"];
 const FLOOR = ["Wiese (gebunden)","EPDM (gebunden)","Fallschutzplatten (gebunden)","Holzschnitzel (lose)","Rundkies (lose)"];
 const LOCTYPES = ["Schule","Gemeindeplatz","Wohnüberbauung","Kirche","Restaurant","Schwimmbad","MFH","Privat"];
-const ICONS = { Schaukeln:"🏗",Rutschen:"🛝",Klettern:"🧗",Sandspiel:"🏖",Wipptiere:"🐴",Karussell:"🎠",Balancieren:"⚖️",Spielhäuser:"🏠",Fallschutz:"🟩" };
+const ICONS = { Schaukeln:"🪢",Rutschen:"🛝",Klettern:"🧗",Sandspiel:"🏖",Wipptiere:"🐴",Karussell:"🎠",Balancieren:"⚖️",Spielhäuser:"🏠",Fallschutz:"🟩" };
+// Inline-SVG icons rendered inside Leaflet markers (crisp & scalable, always white on colored bg)
+const SVG_ICONS = {
+  Schaukeln: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4 L12 12 L20 4"/><line x1="12" y1="12" x2="12" y2="17"/><line x1="9" y1="17" x2="15" y2="17"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="9" y1="17" x2="9" y2="20"/><line x1="15" y1="17" x2="15" y2="20"/></svg>`,
+  Rutschen: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1"/><path d="M6 9 L20 20"/><line x1="18" y1="17" x2="22" y2="20"/></svg>`,
+  Karussell: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2"/></svg>`,
+  Klettern: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18"/><line x1="5" y1="8" x2="19" y2="8"/><line x1="5" y1="13" x2="19" y2="13"/><line x1="5" y1="18" x2="19" y2="18"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>`,
+  Wipptiere: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 L21 12"/><path d="M6 18 L6 12"/><circle cx="18" cy="9" r="2.5" fill="white"/></svg>`,
+  Balancieren: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><path d="M8 12 L10 18 L14 18 L16 12"/></svg>`,
+  Sandspiel: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="18" height="10" rx="1"/><path d="M7 10 C8 7 10 6 12 6 C14 6 16 7 17 10"/></svg>`,
+  Spielhäuser: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 L12 3 L21 12"/><path d="M5 10 L5 21 L19 21 L19 10"/><rect x="10" y="14" width="4" height="7"/></svg>`,
+  Fallschutz: `<svg viewBox="0 0 24 24" width="22" height="22" fill="white" stroke="white" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2" opacity=".7"/></svg>`,
+};
 const CAT_COLORS = { Schaukeln:"#3B82F6",Rutschen:"#EF4444",Klettern:"#8B5CF6",Sandspiel:"#F59E0B",Wipptiere:"#10B981",Karussell:"#EC4899",Balancieren:"#6366F1",Spielhäuser:"#D97706",Fallschutz:"#059669" };
 const DYNAMIC_CATS = ["Schaukeln","Wipptiere","Karussell","Rutschen"];
 
@@ -993,6 +1005,21 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       const t=toolRef.current;
       const pending=pendingEqRef.current;
       if(pending){
+        // Check collision before placing
+        const movedPl={id:"__tmp",eqId:pending.id,lat:e.latlng.lat,lng:e.latlng.lng,rot:0};
+        const eq=pending;
+        const hasConflict = placed.some(other=>{
+          const otherEq=equipment.find(x=>x.id===other.eqId);
+          if(!otherEq) return false;
+          if(!DYNAMIC_CATS.includes(eq.cat)||!DYNAMIC_CATS.includes(otherEq.cat)) return false;
+          if(!eq.fallZone||!otherEq.fallZone) return false;
+          return zonesOverlap(movedPl,eq,other,otherEq);
+        });
+        if(hasConflict){
+          setCollisionWarning(true);
+          setTimeout(()=>setCollisionWarning(false),2500);
+          return; // Stay in place-mode, let user try again
+        }
         // Place the pending equipment here
         const id=uid();
         updateProject(p=>({...p,placed:[...(p.placed||[]),{id,eqId:pending.id,lat:e.latlng.lat,lng:e.latlng.lng,rot:0}]}));
@@ -1138,6 +1165,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           width:0;height:0;border-left:6px solid transparent;
           border-right:6px solid transparent;border-bottom:8px solid #1B4332;
         "></div></div>`:"";
+      const iconContent=SVG_ICONS[eq.cat]||`<span style="font-size:21px">${eq.icon}</span>`;
       const icon=L.divIcon({
         className:"",
         html:`<div style="position:relative;width:${baseSize}px;height:${baseSize}px;">
@@ -1148,10 +1176,10 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
             border:3px solid ${isSel?"#1B4332":"white"};
             box-shadow:0 3px 10px rgba(0,0,0,0.35);
             display:flex;align-items:center;justify-content:center;
-            font-size:21px;cursor:grab;
+            cursor:grab;
             transform:${isSel?"scale(1.15)":"scale(1)"} rotate(${rot}deg);
             transition:transform .15s ease;
-          "><span style="transform:rotate(${-rot}deg);display:inline-block;">${eq.icon}</span></div>
+          "><div style="transform:rotate(${-rot}deg);display:inline-flex;">${iconContent}</div></div>
         </div>`,
         iconSize:[baseSize,baseSize], iconAnchor:[baseSize/2,baseSize/2],
       });
@@ -1160,9 +1188,32 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       }).addTo(eqLayer);
       m.bindTooltip(`<b>${eq.name}</b><br><small>${eq.cat} · ${fmt(eq.price)}${pl.rot?` · ${pl.rot}°`:""}</small>`,{direction:"top",offset:[0,-20]});
       m.on("click",()=>setSelected({type:"eq",id:pl.id}));
+      // Store pre-drag position to revert on conflict
+      m.on("dragstart",(e)=>{
+        e.target._preDrag={lat:pl.lat,lng:pl.lng};
+      });
       m.on("dragend",(e)=>{
         const ll=e.target.getLatLng();
-        updateProject(p=>({...p,placed:p.placed.map(x=>x.id===pl.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
+        // Check if new position causes fall zone overlap with ANY other dynamic equipment
+        const movedPl={...pl, lat:ll.lat, lng:ll.lng};
+        const hasConflict = placed.some(other=>{
+          if(other.id===pl.id) return false;
+          const otherEq=equipment.find(x=>x.id===other.eqId);
+          if(!otherEq) return false;
+          // Only block when BOTH are dynamic (swings/carousels/etc.) AND both have fallZone
+          if(!DYNAMIC_CATS.includes(eq.cat)||!DYNAMIC_CATS.includes(otherEq.cat)) return false;
+          if(!eq.fallZone||!otherEq.fallZone) return false;
+          return zonesOverlap(movedPl,eq,other,otherEq);
+        });
+        if(hasConflict){
+          // Revert to pre-drag position
+          const pd=e.target._preDrag||{lat:pl.lat,lng:pl.lng};
+          e.target.setLatLng([pd.lat,pd.lng]);
+          setCollisionWarning(true);
+          setTimeout(()=>setCollisionWarning(false),2500);
+        } else {
+          updateProject(p=>({...p,placed:p.placed.map(x=>x.id===pl.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
+        }
       });
     });
 
@@ -1197,13 +1248,17 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         const mToDegLat=(m)=>m/111320;
         const lat=ob.lat, lng=ob.lng;
         const hw=(ob.w||6)/2, hh=(ob.h||4)/2;
-        const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>[
-          lat+mToDegLat(y), lng+mToDegLat(x)/Math.cos(lat*Math.PI/180)
-        ]);
+        const rot=((ob.rot||0)*Math.PI)/180;
+        // Rotate corners around center
+        const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>{
+          const rx=x*Math.cos(rot)-y*Math.sin(rot);
+          const ry=x*Math.sin(rot)+y*Math.cos(rot);
+          return [lat+mToDegLat(ry), lng+mToDegLat(rx)/Math.cos(lat*Math.PI/180)];
+        });
         L.polygon(corners,{
-          color:"#374151", weight:2, fillColor:"#9CA3AF", fillOpacity:.6,
+          color:isSel?"#D4A853":"#374151", weight:isSel?2.5:2, fillColor:"#9CA3AF", fillOpacity:.6,
         }).addTo(obLayer);
-        // Draggable center marker
+        // Draggable center marker — icon rotates with building
         const icon=L.divIcon({
           className:"",
           html:`<div style="
@@ -1212,11 +1267,12 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
             box-shadow:0 2px 6px rgba(0,0,0,0.3);
             display:flex;align-items:center;justify-content:center;
             color:white;font-size:16px;cursor:grab;
-          ">🏠</div>`,
+            transform:rotate(${ob.rot||0}deg);
+          "><span style="transform:rotate(${-(ob.rot||0)}deg);display:inline-block;">🏠</span></div>`,
           iconSize:[32,32], iconAnchor:[16,16],
         });
         const m=L.marker([lat,lng],{icon,draggable:true}).addTo(obLayer);
-        m.bindTooltip(ob.label,{direction:"top",offset:[0,-14]});
+        m.bindTooltip(`${ob.label} (${ob.w||6}×${ob.h||4}m${ob.rot?` · ${ob.rot}°`:""})`,{direction:"top",offset:[0,-14]});
         m.on("click",()=>setSelected({type:"ob",id:ob.id}));
         m.on("dragend",(e)=>{
           const ll=e.target.getLatLng();
@@ -1883,6 +1939,14 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                 {["Alle",...CATS].map(c=><option key={c}>{c}</option>)}
               </select>
               <button onClick={autoPlace} style={{padding:"6px 9px",border:`1.5px solid ${T.gold}`,background:T.gold+"15",borderRadius:6,fontSize:12,fontWeight:600,color:"#8B6914",cursor:"pointer",fontFamily:"inherit"}}>✨ KI auto-platzieren</button>
+              {(placed.length>0||obstacles.length>0)&&(
+                <button onClick={()=>{
+                  if(window.confirm(`Wirklich alle ${placed.length} Geräte und ${obstacles.length} Objekte vom Plan entfernen?`)){
+                    updateProject(p=>({...p,placed:[],obstacles:[]}));
+                    setSelected(null);
+                  }
+                }} style={{padding:"6px 9px",border:`1.5px solid ${T.red}`,background:T.redLight,borderRadius:6,fontSize:12,fontWeight:600,color:T.red,cursor:"pointer",fontFamily:"inherit"}}>🗑 Alles zurücksetzen</button>
+              )}
             </div>
             <div style={{flex:1,overflow:"auto",padding:"8px 10px",display:"flex",flexDirection:"column",gap:5}}>
               {libFiltered.length===0&&<div style={{color:T.muted,fontSize:12,padding:16,textAlign:"center"}}>Keine Geräte</div>}
@@ -2085,6 +2149,24 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                   <>
                     <Input label="Breite (m)" type="number" value={selOb.w||6} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,w:Math.max(1,Number(v))}:x)}))}/>
                     <Input label="Tiefe (m)" type="number" value={selOb.h||4} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,h:Math.max(1,Number(v))}:x)}))}/>
+                    <div style={{background:T.bg,borderRadius:8,padding:10,display:"flex",flexDirection:"column",gap:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <span style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>Ausrichtung</span>
+                        <span className="syne" style={{fontWeight:800,fontSize:13,color:T.green}}>{selOb.rot||0}°</span>
+                      </div>
+                      <input type="range" min="0" max="359" step="1" value={selOb.rot||0}
+                        onChange={e=>{
+                          const v=Number(e.target.value);
+                          updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,rot:v}:x)}));
+                        }}
+                        style={{width:"100%",accentColor:T.green,cursor:"pointer"}}/>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={()=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,rot:((x.rot||0)-15+360)%360}:x)}))} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>↺ 15°</button>
+                        <button onClick={()=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,rot:0}:x)}))} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}} title="0°">⊙</button>
+                        <button onClick={()=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,rot:((x.rot||0)+15)%360}:x)}))} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>15° ↻</button>
+                      </div>
+                      <div style={{fontSize:10,color:T.muted,textAlign:"center"}}>Ausrichtung zum Luftbild anpassen</div>
+                    </div>
                   </>}
                 <Btn variant="ghost" onClick={deleteSelected} style={{color:T.red,borderColor:T.red+"66"}}>🗑 Entfernen</Btn>
               </>
