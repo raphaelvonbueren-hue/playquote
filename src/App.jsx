@@ -1169,8 +1169,16 @@ function RenderStudio({ sourceScene, sourceCamera, onClose }) {
         pathTracer.filterGlossyFactor = 0.5;
         pathTracerRef.current = pathTracer;
 
-        // Set scene (this builds BVH - can take a moment)
-        await pathTracer.setSceneAsync(scene, camera);
+        // Try to use async BVH worker (faster/non-blocking). Fall back to sync.
+        try {
+          const { ParallelMeshBVHWorker } = await import("three-mesh-bvh/src/workers/ParallelMeshBVHWorker.js");
+          pathTracer.setBVHWorker(new ParallelMeshBVHWorker());
+          await pathTracer.setSceneAsync(scene, camera);
+        } catch (workerErr) {
+          // Fallback: synchronous setScene (blocks UI briefly but always works)
+          console.warn("BVH worker unavailable, using sync:", workerErr.message);
+          pathTracer.setScene(scene, camera);
+        }
         if (cancelled) return;
 
         setStatus("rendering");
