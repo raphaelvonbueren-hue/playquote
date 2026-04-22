@@ -882,14 +882,18 @@ function calcFallZone(eq) {
   return { shape: "rect", w: w + fz * 2, h: h + fz * 2 };
 }
 
-// Detect if 2 placed items' fall zones overlap (in meters; positions in meters)
+// Detect if 2 placed items' fall zones overlap (positions in lat/lng)
 function zonesOverlap(a, ea, b, eb) {
   const za = calcFallZone(ea); const zb = calcFallZone(eb);
   if (!za || !zb) return false;
-  // approximate both as bounding circles for simplicity
   const ra = za.shape === "circle" ? za.r : Math.max(za.w, za.h) / 2;
   const rb = zb.shape === "circle" ? zb.r : Math.max(zb.w, zb.h) / 2;
-  const dx = a.x - b.x, dy = a.y - b.y;
+  if (a.lat == null || b.lat == null) return false;
+  const mPerLat = 111320;
+  const lat0 = (a.lat + b.lat) / 2;
+  const mPerLng = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const dx = (a.lng - b.lng) * mPerLng;
+  const dy = (a.lat - b.lat) * mPerLat;
   return Math.sqrt(dx * dx + dy * dy) < ra + rb;
 }
 
@@ -910,6 +914,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   const threeContainerRef=useRef(null);
   const threeRef=useRef(null);
   const animRef=useRef(null);
+  const targetRef=useRef(new THREE.Vector3(0,1.5,0));
 
   const placed=project.placed||[];
   const obstacles=project.obstacles||[];
@@ -1049,24 +1054,39 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
       const isSel=selected&&selected.type==="eq"&&selected.id===pl.id;
+      const rot=pl.rot||0;
+      // Size of marker grows slightly with equipment size (visual hint only)
+      const baseSize=44;
+      const arrow=isSel?`<div style="
+          position:absolute;left:50%;top:-14px;width:2px;height:22px;
+          background:#1B4332;transform-origin:bottom center;
+          transform:translateX(-50%) rotate(${rot}deg);pointer-events:none;
+        "><div style="
+          position:absolute;top:-6px;left:-5px;
+          width:0;height:0;border-left:6px solid transparent;
+          border-right:6px solid transparent;border-bottom:8px solid #1B4332;
+        "></div></div>`:"";
       const icon=L.divIcon({
         className:"",
-        html:`<div style="
-          width:46px;height:46px;border-radius:50%;
-          background:${eq.color};
-          border:3px solid ${isSel?"#1B4332":"white"};
-          box-shadow:0 3px 10px rgba(0,0,0,0.35);
-          display:flex;align-items:center;justify-content:center;
-          font-size:22px;cursor:grab;
-          transform:${isSel?"scale(1.15)":"scale(1)"};
-          transition:transform .12s ease;
-        ">${eq.icon}</div>`,
-        iconSize:[46,46], iconAnchor:[23,23],
+        html:`<div style="position:relative;width:${baseSize}px;height:${baseSize}px;">
+          ${arrow}
+          <div style="
+            width:${baseSize}px;height:${baseSize}px;border-radius:50%;
+            background:${eq.color};
+            border:3px solid ${isSel?"#1B4332":"white"};
+            box-shadow:0 3px 10px rgba(0,0,0,0.35);
+            display:flex;align-items:center;justify-content:center;
+            font-size:21px;cursor:grab;
+            transform:${isSel?"scale(1.15)":"scale(1)"} rotate(${rot}deg);
+            transition:transform .15s ease;
+          "><span style="transform:rotate(${-rot}deg);display:inline-block;">${eq.icon}</span></div>
+        </div>`,
+        iconSize:[baseSize,baseSize], iconAnchor:[baseSize/2,baseSize/2],
       });
       const m=L.marker([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{
         icon, draggable:true, riseOnHover:true,
       }).addTo(eqLayer);
-      m.bindTooltip(`<b>${eq.name}</b><br><small>${eq.cat} · ${fmt(eq.price)}</small>`,{direction:"top",offset:[0,-20]});
+      m.bindTooltip(`<b>${eq.name}</b><br><small>${eq.cat} · ${fmt(eq.price)}${pl.rot?` · ${pl.rot}°`:""}</small>`,{direction:"top",offset:[0,-20]});
       m.on("click",()=>setSelected({type:"eq",id:pl.id}));
       m.on("dragend",(e)=>{
         const ll=e.target.getLatLng();
@@ -1187,7 +1207,45 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     }catch(e){ console.warn("geocode failed",e); }
   }
 
-  /* ────── 3D VIEW (Three.js) ────── */
+  // ── Keyboard shortcuts ──
+  useEffect(()=>{
+    const h=(e)=>{
+      // Skip when typing in input/textarea
+      const t=e.target.tagName;
+      if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT") return;
+      if(!selected) return;
+      if(e.key==="r"||e.key==="R"){
+        e.preventDefault();
+        if(selected.type==="eq"){
+          const step=e.shiftKey?-15:15;
+          updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selected.id?{...x,rot:((x.rot||0)+step+360)%360}:x)}));
+        }
+      } else if(e.key==="Delete"||e.key==="Backspace"){
+        e.preventDefault();
+        if(selected.type==="eq") updateProject(p=>({...p,placed:p.placed.filter(x=>x.id!==selected.id)}));
+        else updateProject(p=>({...p,obstacles:p.obstacles.filter(x=>x.id!==selected.id)}));
+        setSelected(null);
+      } else if(e.key==="Escape"){
+        setSelected(null);
+      }
+    };
+    window.addEventListener("keydown",h);
+    return ()=>window.removeEventListener("keydown",h);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selected]);
+
+  /* ────── 3D VIEW (Three.js, manuell steuerbar) ────── */
+  // Höhe aus Name/Desc parsen (KOMPAN Muster: "H:2,5m" / "Höhe: 3,0 m" / "3m hoch")
+  function parseHeight(eq){
+    const txt=`${eq.name||""} ${eq.desc||""}`;
+    const m=txt.match(/H[öo]?he?:?\s*(\d+[.,]?\d*)\s*m/i)||txt.match(/(\d+[.,]?\d*)\s*m\s*hoch/i);
+    if(m) return parseFloat(m[1].replace(",","."));
+    // Kategorie-Defaults (EN 1176 Richtwerte)
+    const d={"Schaukeln":2.5,"Rutschen":1.5,"Karussell":0.25,"Wipptiere":0.9,
+      "Spielhäuser":2.4,"Klettern":2.8,"Sandspiel":0.35,"Balancieren":0.4,"Fallschutz":0.04};
+    return d[eq.cat]||1.5;
+  }
+
   useEffect(()=>{
     if(view!=="3d"||!threeContainerRef.current) return;
 
@@ -1195,136 +1253,322 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     while(container.firstChild) container.removeChild(container.firstChild);
 
     const W=container.clientWidth, H=container.clientHeight||500;
+
+    // Scene
     const scene=new THREE.Scene();
-    scene.background=new THREE.Color("#87CEEB"); // sky blue
-    scene.fog=new THREE.Fog("#B8D5E8",50,200);
+    scene.background=new THREE.Color("#B8D5E8");
+    scene.fog=new THREE.Fog("#B8D5E8",80,250);
 
-    const camera=new THREE.PerspectiveCamera(60,W/H,0.1,500);
-    camera.position.set(25,30,35);
-    camera.lookAt(0,0,0);
+    // Camera
+    const camera=new THREE.PerspectiveCamera(50,W/H,0.1,500);
+    camera.position.set(22,18,22);
+    camera.lookAt(0,1.5,0);
 
-    const renderer=new THREE.WebGLRenderer({antialias:true});
+    // Renderer
+    const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
     renderer.setSize(W,H);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
     renderer.shadowMap.enabled=true;
     renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    renderer.toneMapping=THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure=1.05;
+    renderer.outputColorSpace=THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
-    // Lighting
-    const hemi=new THREE.HemisphereLight("#ffffff","#8B7355",0.6); scene.add(hemi);
-    const sun=new THREE.DirectionalLight("#fffaf0",1.1);
-    sun.position.set(25,40,15); sun.castShadow=true;
+    // Lighting – sun + sky (with Earth-like ambient)
+    const hemi=new THREE.HemisphereLight(0xcfe2ff,0x6b7a52,0.55);
+    scene.add(hemi);
+    const sun=new THREE.DirectionalLight(0xffffff,2.1);
+    sun.position.set(30,45,20); sun.castShadow=true;
     sun.shadow.mapSize.width=2048; sun.shadow.mapSize.height=2048;
-    sun.shadow.camera.left=-40; sun.shadow.camera.right=40;
-    sun.shadow.camera.top=40; sun.shadow.camera.bottom=-40;
+    sun.shadow.camera.left=-30; sun.shadow.camera.right=30;
+    sun.shadow.camera.top=30; sun.shadow.camera.bottom=-30;
+    sun.shadow.camera.near=1; sun.shadow.camera.far=120;
+    sun.shadow.bias=-0.0005; sun.shadow.normalBias=0.03;
     scene.add(sun);
+    // Subtle fill from opposite side
+    const fill=new THREE.DirectionalLight(0xaabde0,0.35);
+    fill.position.set(-20,15,-10); scene.add(fill);
 
-    // Ground – grass with subtle pattern
-    const groundSize=80;
-    const groundGeo=new THREE.PlaneGeometry(groundSize,groundSize,32,32);
-    const groundMat=new THREE.MeshStandardMaterial({color:"#9CAF88",roughness:.95});
+    // Ground
+    const groundSize=100;
+    const groundGeo=new THREE.PlaneGeometry(groundSize,groundSize,1,1);
+    const groundMat=new THREE.MeshStandardMaterial({color:"#87986D",roughness:.95,metalness:0});
     const ground=new THREE.Mesh(groundGeo,groundMat);
     ground.rotation.x=-Math.PI/2; ground.receiveShadow=true;
     scene.add(ground);
-
-    // Grid
-    const grid=new THREE.GridHelper(groundSize,40,"#5A7153","#7A9270");
-    grid.material.opacity=.4; grid.material.transparent=true;
+    // Grid (subtle)
+    const grid=new THREE.GridHelper(groundSize,50,0x3a4a35,0x5d7052);
+    grid.material.opacity=.28; grid.material.transparent=true;
+    grid.position.y=0.005;
     scene.add(grid);
 
-    // Scale: 1 unit = 1 meter; map lat/lng → local XZ via projection around center
+    // Lat/lng → local XZ (1 unit = 1m)
     const mapCenter=projectCenter;
     const mPerLat=111320;
     const mPerLng=111320*Math.cos(mapCenter.lat*Math.PI/180);
     const toLocal=(lat,lng)=>[(lng-mapCenter.lng)*mPerLng,(lat-mapCenter.lat)*mPerLat];
 
-    // Equipment 3D models (simplified but recognizable by category)
+    // Material helpers
+    const metalPost=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.65,roughness:.3});
+    const plastic=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.05,roughness:.55});
+    const wood=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.02,roughness:.82});
+    const rubber=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.1,roughness:.85});
+
+    /* ── Detaillierte Modelle pro Kategorie ── */
     function buildEqMesh(eq,pl){
       const g=new THREE.Group();
-      const [w,h]=eq.size||[2,2];
-      const col=new THREE.Color(eq.color||"#3B82F6");
+      g.userData={eqId:eq.id,placedId:pl.id};
+      const [w,d]=eq.size||[2,2]; // width, depth in meters
+      const height=parseHeight(eq);
+      const col=eq.color||"#3B82F6";
+      const isSel=selected&&selected.type==="eq"&&selected.id===pl.id;
+
       if(eq.cat==="Schaukeln"){
-        // A-frame posts + top bar
-        const postMat=new THREE.MeshStandardMaterial({color:"#9CA3AF",metalness:.6,roughness:.3});
-        const barMat=new THREE.MeshStandardMaterial({color:col,metalness:.4,roughness:.5});
-        [[-w/2,0],[w/2,0]].forEach(([x,z])=>{
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,2.5,8),postMat);
-          p.position.set(x,1.25,z); p.castShadow=true; g.add(p);
+        const frameH=Math.max(height,2.0);
+        const frameMat=metalPost("#6B7B8C");
+        const chainMat=metalPost("#4B5563");
+        const seatMat=rubber("#1F2937");
+        // A-frame: 4 legs angled inward at top
+        const legLen=Math.sqrt(frameH*frameH+0.8*0.8);
+        const legAngle=Math.atan2(0.8,frameH);
+        [[-w/2, d/2-.2],[ w/2, d/2-.2],[-w/2,-d/2+.2],[ w/2,-d/2+.2]].forEach(([x,z])=>{
+          const leg=new THREE.Mesh(new THREE.CylinderGeometry(.065,.075,legLen,10),frameMat);
+          leg.position.set(x*0.95,frameH/2,z);
+          // Tilt toward center along x
+          leg.rotation.z=Math.sign(x)*legAngle*0.6;
+          leg.rotation.x=-Math.sign(z)*legAngle*0.4;
+          leg.castShadow=true; g.add(leg);
         });
-        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w,8),barMat);
-        bar.rotation.z=Math.PI/2; bar.position.y=2.5; bar.castShadow=true; g.add(bar);
-        // seats
-        const nSeats=w>3?2:1;
-        for(let i=0;i<nSeats;i++){
-          const seat=new THREE.Mesh(new THREE.BoxGeometry(.6,.1,.3),new THREE.MeshStandardMaterial({color:"#1F2937"}));
-          seat.position.set(-0.6+i*1.2,1.0,0); seat.castShadow=true; g.add(seat);
+        // Top bar
+        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w*.9,10),frameMat);
+        bar.rotation.z=Math.PI/2; bar.position.y=frameH; bar.castShadow=true; g.add(bar);
+        // Seats
+        const isNest=/nest/i.test(eq.name||"");
+        const nSeats=isNest?1:(w>3.5?2:1);
+        if(isNest){
+          const seatR=0.55;
+          const nest=new THREE.Mesh(new THREE.TorusGeometry(seatR,.07,8,24),seatMat);
+          nest.rotation.x=Math.PI/2; nest.position.set(0,0.5,0); nest.castShadow=true; g.add(nest);
+          // chains
+          for(let i=0;i<4;i++){
+            const a=(i/4)*Math.PI*2;
+            const ch=new THREE.Mesh(new THREE.CylinderGeometry(.015,.015,frameH-0.5,6),chainMat);
+            ch.position.set(Math.cos(a)*seatR*.9,0.5+(frameH-0.5)/2,Math.sin(a)*seatR*.9);
+            g.add(ch);
+          }
+        } else {
+          const seatSpacing=nSeats>1?1.5:0;
+          for(let i=0;i<nSeats;i++){
+            const sx=(i-(nSeats-1)/2)*seatSpacing;
+            const seat=new THREE.Mesh(new THREE.BoxGeometry(.55,.07,.22),seatMat);
+            seat.position.set(sx,0.55,0); seat.castShadow=true; g.add(seat);
+            // 2 chains per seat
+            [-0.22,0.22].forEach(cx=>{
+              const ch=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,frameH-0.55,6),chainMat);
+              ch.position.set(sx+cx,0.55+(frameH-0.55)/2,0);
+              g.add(ch);
+            });
+          }
         }
-      } else if(eq.cat==="Rutschen"){
-        const mat=new THREE.MeshStandardMaterial({color:col,metalness:.4,roughness:.4});
-        // platform
-        const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.15,1.2),mat);
-        plat.position.set(-h/2+.6,1.8,0); plat.castShadow=true; g.add(plat);
-        // slide
-        const slide=new THREE.Mesh(new THREE.BoxGeometry(h,.1,.8),mat);
-        slide.position.set(0,.9,0); slide.rotation.z=Math.atan2(1.8,h); slide.castShadow=true; g.add(slide);
-      } else if(eq.cat==="Karussell"){
-        const mat=new THREE.MeshStandardMaterial({color:col,metalness:.5,roughness:.3});
-        const r=Math.max(w,h)/2;
-        const base=new THREE.Mesh(new THREE.CylinderGeometry(r,r,.15,24),mat);
-        base.position.y=.2; base.castShadow=true; g.add(base);
-        const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,1.2,8),new THREE.MeshStandardMaterial({color:"#6B7280"}));
-        pole.position.y=.85; g.add(pole);
-      } else if(eq.cat==="Wipptiere"){
-        const mat=new THREE.MeshStandardMaterial({color:col});
-        const b=new THREE.Mesh(new THREE.BoxGeometry(w,.6,h*.5),mat);
-        b.position.y=.5; b.castShadow=true; g.add(b);
-      } else if(eq.cat==="Spielhäuser"){
-        const mat=new THREE.MeshStandardMaterial({color:col});
-        const base=new THREE.Mesh(new THREE.BoxGeometry(w,1.5,h),mat);
-        base.position.y=.75; base.castShadow=true; g.add(base);
-        const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,h)*.75,1,4),new THREE.MeshStandardMaterial({color:"#7C2D12"}));
-        roof.position.y=2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
-      } else if(eq.cat==="Klettern"){
-        const mat=new THREE.MeshStandardMaterial({color:col});
-        for(let i=0;i<4;i++){
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,2.5,6),mat);
-          const a=(i/4)*Math.PI*2;
-          p.position.set(Math.cos(a)*w/2,1.25,Math.sin(a)*h/2); p.castShadow=true; g.add(p);
-        }
-      } else if(eq.cat==="Sandspiel"){
-        const mat=new THREE.MeshStandardMaterial({color:"#D4B088"});
-        const box=new THREE.Mesh(new THREE.BoxGeometry(w,.3,h),mat);
-        box.position.y=.15; box.castShadow=true; g.add(box);
-      } else if(eq.cat==="Balancieren"){
-        const mat=new THREE.MeshStandardMaterial({color:col});
-        const b=new THREE.Mesh(new THREE.BoxGeometry(Math.max(w,h),.25,.2),mat);
-        b.position.y=.35; b.castShadow=true; g.add(b);
-      } else {
-        const b=new THREE.Mesh(new THREE.BoxGeometry(w,1,h),new THREE.MeshStandardMaterial({color:col}));
-        b.position.y=.5; b.castShadow=true; g.add(b);
       }
-      // Position group
+      else if(eq.cat==="Rutschen"){
+        const platH=Math.max(height,1.2);
+        const slideLen=Math.max(d,platH*1.8);
+        const slideColor=plastic(col);
+        const postMat=metalPost("#6B7B8C");
+        const woodPlat=wood("#C69A5A");
+        // Platform
+        const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.1,1.2),woodPlat);
+        plat.position.set(-slideLen/2+0.6,platH,0); plat.castShadow=true; plat.receiveShadow=true;
+        g.add(plat);
+        // 4 posts under platform
+        [[-0.55,-0.55],[0.55,-0.55],[-0.55,0.55],[0.55,0.55]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,platH,8),postMat);
+          p.position.set(-slideLen/2+0.6+x,platH/2,z); p.castShadow=true; g.add(p);
+        });
+        // Slide bed (inclined)
+        const slideAngle=Math.atan2(platH,slideLen-0.6);
+        const bed=new THREE.Mesh(new THREE.BoxGeometry(slideLen-0.6,.08,.7),slideColor);
+        bed.position.set(0,platH/2,0);
+        bed.rotation.z=slideAngle;
+        bed.castShadow=true; g.add(bed);
+        // Side rails
+        [-0.38,0.38].forEach(sz=>{
+          const r=new THREE.Mesh(new THREE.BoxGeometry(slideLen-0.6,.12,.05),slideColor);
+          r.position.set(0,platH/2+.06,sz);
+          r.rotation.z=slideAngle;
+          r.castShadow=true; g.add(r);
+        });
+        // Ladder on left end
+        const ladder=new THREE.Mesh(new THREE.BoxGeometry(.08,platH,.5),postMat);
+        ladder.position.set(-slideLen/2+0.6-0.5,platH/2,0); g.add(ladder);
+        for(let i=0;i<Math.floor(platH/0.3);i++){
+          const rung=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,.5,6),postMat);
+          rung.rotation.z=Math.PI/2;
+          rung.position.set(-slideLen/2+0.6-0.5,0.2+i*0.3,0);
+          g.add(rung);
+        }
+      }
+      else if(eq.cat==="Karussell"){
+        const r=Math.max(w,d)/2;
+        const discH=0.18;
+        const disc=new THREE.Mesh(new THREE.CylinderGeometry(r,r,discH,32),plastic(col));
+        disc.position.y=discH/2; disc.castShadow=true; disc.receiveShadow=true; g.add(disc);
+        const rim=new THREE.Mesh(new THREE.TorusGeometry(r,.04,8,32),metalPost("#9CA3AF"));
+        rim.rotation.x=Math.PI/2; rim.position.y=discH; g.add(rim);
+        // Center pole
+        const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.1,1.0,10),metalPost("#6B7B8C"));
+        pole.position.y=discH+0.5; g.add(pole);
+        // Handles (4)
+        for(let i=0;i<4;i++){
+          const a=(i/4)*Math.PI*2;
+          const h=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,1,6),metalPost("#6B7B8C"));
+          h.position.set(Math.cos(a)*r*0.8,discH+0.5,Math.sin(a)*r*0.8);
+          g.add(h);
+          const top=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,r*0.4,6),metalPost("#6B7B8C"));
+          top.rotation.z=Math.PI/2; top.rotation.y=-a;
+          top.position.set(Math.cos(a)*r*0.6,discH+1.0,Math.sin(a)*r*0.6);
+          g.add(top);
+        }
+      }
+      else if(eq.cat==="Wipptiere"){
+        const seatH=0.55;
+        // Central pivot
+        const pivot=new THREE.Mesh(new THREE.CylinderGeometry(.12,.15,.2,12),metalPost("#6B7B8C"));
+        pivot.position.y=0.1; g.add(pivot);
+        const spring=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.35,8),metalPost("#4B5563"));
+        spring.position.y=0.375; g.add(spring);
+        // Animal body
+        const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.6,8,12),plastic(col));
+        body.rotation.z=Math.PI/2;
+        body.position.y=seatH+.1; body.castShadow=true; g.add(body);
+        // Handlebar
+        const hb=new THREE.Mesh(new THREE.CylinderGeometry(.02,.02,.35,6),metalPost("#6B7B8C"));
+        hb.rotation.x=Math.PI/2; hb.position.set(0.3,seatH+.35,0); g.add(hb);
+      }
+      else if(eq.cat==="Spielhäuser"){
+        const baseH=Math.max(height*0.7,1.8);
+        const base=new THREE.Mesh(new THREE.BoxGeometry(w,baseH,d),wood("#C69A5A"));
+        base.position.y=baseH/2; base.castShadow=true; base.receiveShadow=true; g.add(base);
+        // Window
+        const win=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.06),plastic("#3B82F6"));
+        win.position.set(0,baseH*0.65,d/2+0.02); g.add(win);
+        // Roof (hip)
+        const roofH=baseH*0.55;
+        const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.72,roofH,4),wood("#8B4513"));
+        roof.position.y=baseH+roofH/2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
+      }
+      else if(eq.cat==="Klettern"){
+        const frameH=Math.max(height,2.2);
+        const postMat=metalPost("#6B7B8C");
+        const ropeMat=rubber("#1F2937");
+        // 4 outer posts
+        [[-w/2,-d/2],[w/2,-d/2],[-w/2,d/2],[w/2,d/2]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,frameH,8),postMat);
+          p.position.set(x,frameH/2,z); p.castShadow=true; g.add(p);
+        });
+        // Top frame
+        [[0,-d/2],[0,d/2]].forEach(([x,z])=>{
+          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,w,8),postMat);
+          bar.rotation.z=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
+        });
+        [[-w/2,0],[w/2,0]].forEach(([x,z])=>{
+          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.05,.05,d,8),postMat);
+          bar.rotation.x=Math.PI/2; bar.position.set(x,frameH,z); g.add(bar);
+        });
+        // Rope net inside (simplified: diagonal bars)
+        for(let i=-1;i<=1;i+=0.5){
+          const rope=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,Math.sqrt(w*w+frameH*frameH)*0.9,6),ropeMat);
+          rope.position.set(i*w/3,frameH/2,0);
+          rope.rotation.z=Math.atan2(frameH,w);
+          g.add(rope);
+        }
+      }
+      else if(eq.cat==="Sandspiel"){
+        const edgeH=0.35;
+        // Wooden border (4 sides)
+        const edgeMat=wood("#A8763E");
+        [[0,-d/2,w,0.1,0],[0,d/2,w,0.1,0],[-w/2,0,0.1,d,Math.PI/2],[w/2,0,0.1,d,Math.PI/2]].forEach(([x,z,bw,bd,ry])=>{
+          const e=new THREE.Mesh(new THREE.BoxGeometry(bw,edgeH,bd),edgeMat);
+          e.position.set(x,edgeH/2,z); e.castShadow=true; e.receiveShadow=true; g.add(e);
+        });
+        // Sand inside
+        const sand=new THREE.Mesh(new THREE.BoxGeometry(w-0.2,0.08,d-0.2),
+          new THREE.MeshStandardMaterial({color:"#E4C785",roughness:.98}));
+        sand.position.y=0.3; sand.receiveShadow=true; g.add(sand);
+      }
+      else if(eq.cat==="Balancieren"){
+        const beamLen=Math.max(w,d);
+        const beamMat=wood("#A8763E");
+        const beam=new THREE.Mesh(new THREE.BoxGeometry(beamLen,.14,.16),beamMat);
+        beam.position.y=0.45; beam.castShadow=true; g.add(beam);
+        // Support posts
+        [[-beamLen/2+0.1,0],[beamLen/2-0.1,0]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,0.45,8),metalPost("#6B7B8C"));
+          p.position.set(x,0.225,z); p.castShadow=true; g.add(p);
+        });
+      }
+      else if(eq.cat==="Fallschutz"){
+        const mat=new THREE.MeshStandardMaterial({color:col,roughness:.85});
+        const pad=new THREE.Mesh(new THREE.BoxGeometry(w,.04,d),mat);
+        pad.position.y=0.02; pad.receiveShadow=true; g.add(pad);
+      }
+      else {
+        const b=new THREE.Mesh(new THREE.BoxGeometry(w,height,d),plastic(col));
+        b.position.y=height/2; b.castShadow=true; g.add(b);
+      }
+
+      // Position & rotate
       const [x,z]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
       g.position.set(x,0,-z);
       g.rotation.y=(pl.rot||0)*Math.PI/180;
+
+      // Selection halo
+      if(isSel){
+        const rSel=Math.max(w,d)/2+0.4;
+        const halo=new THREE.Mesh(
+          new THREE.RingGeometry(rSel,rSel+0.12,48),
+          new THREE.MeshBasicMaterial({color:"#D4A853",side:THREE.DoubleSide,transparent:true,opacity:.9})
+        );
+        halo.rotation.x=-Math.PI/2; halo.position.y=0.03;
+        g.add(halo);
+      }
       return g;
     }
 
+    // Build equipment + fall zones
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
       scene.add(buildEqMesh(eq,pl));
-      // fall zone ring on ground
       const zone=calcFallZone(eq);
       if(zone){
-        const [x,z]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
-        const mat=new THREE.MeshBasicMaterial({color:"#F59E0B",transparent:true,opacity:.3,side:THREE.DoubleSide});
+        const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+        const inConflict=conflicts.some(c=>c.includes(pl.id));
+        const zcol=inConflict?"#DC2626":"#F59E0B";
+        const fillMat=new THREE.MeshBasicMaterial({color:zcol,transparent:true,opacity:.22,side:THREE.DoubleSide,depthWrite:false});
+        const edgeMat=new THREE.LineBasicMaterial({color:zcol,linewidth:2,transparent:true,opacity:.85});
         if(zone.shape==="circle"){
-          const ring=new THREE.Mesh(new THREE.RingGeometry(zone.r-.1,zone.r,32),mat);
-          ring.rotation.x=-Math.PI/2; ring.position.set(x,.02,-z); scene.add(ring);
+          const fill=new THREE.Mesh(new THREE.CircleGeometry(zone.r,48),fillMat);
+          fill.rotation.x=-Math.PI/2; fill.position.set(lx,0.015,-lz); scene.add(fill);
+          const edge=new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+            Array.from({length:49},(_,i)=>{const a=i/48*Math.PI*2;return new THREE.Vector3(Math.cos(a)*zone.r,0.02,Math.sin(a)*zone.r);})
+          ),edgeMat);
+          edge.position.set(lx,0,-lz); scene.add(edge);
         } else {
-          const rect=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),mat);
-          rect.rotation.x=-Math.PI/2; rect.rotation.z=(pl.rot||0)*Math.PI/180;
-          rect.position.set(x,.02,-z); scene.add(rect);
+          const fill=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),fillMat);
+          fill.rotation.x=-Math.PI/2; fill.rotation.z=-(pl.rot||0)*Math.PI/180;
+          fill.position.set(lx,0.015,-lz); scene.add(fill);
+          const hw=zone.w/2, hh=zone.h/2;
+          const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh],[-hw,-hh]];
+          const rot=(pl.rot||0)*Math.PI/180;
+          const pts=corners.map(([x,z])=>{
+            const rx=x*Math.cos(rot)-z*Math.sin(rot);
+            const rz=x*Math.sin(rot)+z*Math.cos(rot);
+            return new THREE.Vector3(lx+rx,0.02,-lz-rz);
+          });
+          const edge=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),edgeMat);
+          scene.add(edge);
         }
       }
     });
@@ -1333,27 +1577,95 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     obstacles.forEach(ob=>{
       const [x,z]=toLocal(ob.lat,ob.lng);
       if(ob.type==="tree"){
-        const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.2,.3,2,8),new THREE.MeshStandardMaterial({color:"#5C3317"}));
-        trunk.position.set(x,1,-z); trunk.castShadow=true; scene.add(trunk);
-        const crown=new THREE.Mesh(new THREE.SphereGeometry(ob.r||3,16,12),new THREE.MeshStandardMaterial({color:"#228B22"}));
-        crown.position.set(x,3+(ob.r||3)*.3,-z); crown.castShadow=true; scene.add(crown);
+        const r=ob.r||3;
+        const trunkH=2.5;
+        const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.2,.3,trunkH,10),wood("#5C3317"));
+        trunk.position.set(x,trunkH/2,-z); trunk.castShadow=true; scene.add(trunk);
+        const crown=new THREE.Mesh(new THREE.SphereGeometry(r,18,14),
+          new THREE.MeshStandardMaterial({color:"#3F8C3F",roughness:.85}));
+        crown.position.set(x,trunkH+r*0.6,-z); crown.castShadow=true; crown.receiveShadow=true; scene.add(crown);
       } else if(ob.type==="building"){
-        const b=new THREE.Mesh(new THREE.BoxGeometry(ob.w||6,3,ob.h||4),new THREE.MeshStandardMaterial({color:"#D1D5DB"}));
-        b.position.set(x,1.5,-z); b.castShadow=true; b.receiveShadow=true; scene.add(b);
-        const roof=new THREE.Mesh(new THREE.BoxGeometry((ob.w||6)+.3,.3,(ob.h||4)+.3),new THREE.MeshStandardMaterial({color:"#7C2D12"}));
-        roof.position.set(x,3.15,-z); scene.add(roof);
+        const bw=ob.w||6, bd=ob.h||4;
+        const bh=3.2;
+        const b=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,bd),
+          new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.85}));
+        b.position.set(x,bh/2,-z); b.castShadow=true; b.receiveShadow=true; scene.add(b);
+        const roof=new THREE.Mesh(new THREE.BoxGeometry(bw+0.3,0.3,bd+0.3),wood("#8B4513"));
+        roof.position.set(x,bh+0.15,-z); roof.castShadow=true; scene.add(roof);
       }
     });
 
-    // Orbit-like rotation
-    let angle=0;
+    // Auto-fit camera to placed items on load
+    if(placed.length>0){
+      const bounds=new THREE.Box3();
+      placed.forEach(pl=>{
+        const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+        bounds.expandByPoint(new THREE.Vector3(lx,0,-lz));
+      });
+      const center=bounds.getCenter(new THREE.Vector3());
+      const size=bounds.getSize(new THREE.Vector3());
+      const dist=Math.max(size.x,size.z,12)*1.8+10;
+      camera.position.set(center.x+dist*0.7,dist*0.6,center.z+dist*0.7);
+      camera.lookAt(center.x,1.5,center.z);
+      targetRef.current.copy(new THREE.Vector3(center.x,1.5,center.z));
+    }
+
+    /* ── Manuelle Orbit-Controls (Maus) ── */
+    const target=targetRef.current;
+    let radius=camera.position.distanceTo(target);
+    let theta=Math.atan2(camera.position.x-target.x,camera.position.z-target.z);
+    let phi=Math.acos(Math.max(-0.99,Math.min(0.99,(camera.position.y-target.y)/radius)));
+    function updateCamera(){
+      camera.position.x=target.x+radius*Math.sin(phi)*Math.sin(theta);
+      camera.position.z=target.z+radius*Math.sin(phi)*Math.cos(theta);
+      camera.position.y=target.y+radius*Math.cos(phi);
+      camera.lookAt(target);
+    }
+    updateCamera();
+
+    let dragging=false, panning=false, lastX=0, lastY=0;
+    const dom=renderer.domElement;
+    dom.style.cursor="grab";
+    const onDown=(e)=>{
+      dragging=true; panning=e.button===2||e.shiftKey;
+      lastX=e.clientX; lastY=e.clientY;
+      dom.style.cursor=panning?"move":"grabbing";
+      e.preventDefault();
+    };
+    const onMove=(e)=>{
+      if(!dragging) return;
+      const dx=e.clientX-lastX, dy=e.clientY-lastY;
+      lastX=e.clientX; lastY=e.clientY;
+      if(panning){
+        // pan target in camera's right/up plane
+        const forward=new THREE.Vector3().subVectors(target,camera.position).normalize();
+        const right=new THREE.Vector3().crossVectors(forward,new THREE.Vector3(0,1,0)).normalize();
+        const up=new THREE.Vector3().crossVectors(right,forward).normalize();
+        const speed=radius*0.0015;
+        target.addScaledVector(right,-dx*speed);
+        target.addScaledVector(up,dy*speed);
+      } else {
+        theta-=dx*0.006;
+        phi=Math.max(0.1,Math.min(Math.PI/2-0.05,phi-dy*0.005));
+      }
+      updateCamera();
+    };
+    const onUp=()=>{ dragging=false; dom.style.cursor="grab"; };
+    const onWheel=(e)=>{
+      radius*=e.deltaY>0?1.08:0.92;
+      radius=Math.max(4,Math.min(120,radius));
+      updateCamera(); e.preventDefault();
+    };
+    const onContext=(e)=>e.preventDefault();
+    dom.addEventListener("pointerdown",onDown);
+    window.addEventListener("pointermove",onMove);
+    window.addEventListener("pointerup",onUp);
+    dom.addEventListener("wheel",onWheel,{passive:false});
+    dom.addEventListener("contextmenu",onContext);
+
+    // Render loop (only when needed, but a steady loop is cheap for small scenes)
     function animate(){
       animRef.current=requestAnimationFrame(animate);
-      angle+=.0015;
-      camera.position.x=Math.cos(angle)*42;
-      camera.position.z=Math.sin(angle)*42;
-      camera.position.y=28;
-      camera.lookAt(0,2,0);
       renderer.render(scene,camera);
     }
     animate();
@@ -1370,9 +1682,22 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     return ()=>{
       if(animRef.current) cancelAnimationFrame(animRef.current);
       window.removeEventListener("resize",onResize);
+      window.removeEventListener("pointermove",onMove);
+      window.removeEventListener("pointerup",onUp);
+      dom.removeEventListener("pointerdown",onDown);
+      dom.removeEventListener("wheel",onWheel);
+      dom.removeEventListener("contextmenu",onContext);
       renderer.dispose();
+      scene.traverse(o=>{
+        if(o.geometry) o.geometry.dispose();
+        if(o.material){
+          if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose());
+          else o.material.dispose();
+        }
+      });
     };
-  },[view,placed,obstacles,equipment]);
+  },[view,placed,obstacles,equipment,selected,conflicts]);
+
 
   /* ────── UI ────── */
   const selEq=selected&&selected.type==="eq"?placed.find(x=>x.id===selected.id):null;
@@ -1558,11 +1883,28 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                 </div>
                 <div style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginTop:4}}>Preis</div>
                 <div className="syne" style={{fontSize:18,fontWeight:800,color:T.green}}>{fmt(selEqData.price)}</div>
-                <div style={{display:"flex",gap:6}}>
-                  <Btn style={{flex:1,fontSize:12}} onClick={()=>rotateSelected(-15)}>↺ 15°</Btn>
-                  <Btn style={{flex:1,fontSize:12}} onClick={()=>rotateSelected(15)}>15° ↻</Btn>
+                {/* Rotation control */}
+                <div style={{background:T.bg,borderRadius:8,padding:10,display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>Rotation</span>
+                    <span className="syne" style={{fontWeight:800,fontSize:13,color:T.green}}>{selEq.rot||0}°</span>
+                  </div>
+                  <input type="range" min="0" max="359" step="1" value={selEq.rot||0}
+                    onChange={e=>{
+                      const v=Number(e.target.value);
+                      updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selEq.id?{...x,rot:v}:x)}));
+                    }}
+                    style={{width:"100%",accentColor:T.green,cursor:"pointer"}}/>
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>rotateSelected(-15)} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>↺ 15°</button>
+                    <button onClick={()=>rotateSelected(-45)} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>↺ 45°</button>
+                    <button onClick={()=>updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selEq.id?{...x,rot:0}:x)}))} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}} title="Auf 0° zurücksetzen">⊙</button>
+                    <button onClick={()=>rotateSelected(45)} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>45° ↻</button>
+                    <button onClick={()=>rotateSelected(15)} style={{flex:1,padding:"6px 0",border:`1px solid ${T.border}`,background:"white",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>15° ↻</button>
+                  </div>
+                  <div style={{fontSize:10,color:T.muted,textAlign:"center"}}>⌨ Taste <b>R</b> = +15° · <b>Shift+R</b> = −15°</div>
                 </div>
-                <Btn variant="ghost" onClick={deleteSelected} style={{color:T.red,borderColor:T.red+"66"}}>🗑 Entfernen</Btn>
+                <Btn variant="ghost" onClick={deleteSelected} style={{color:T.red,borderColor:T.red+"66"}}>🗑 Entfernen (Entf)</Btn>
               </>
             )}
             {selOb&&(
