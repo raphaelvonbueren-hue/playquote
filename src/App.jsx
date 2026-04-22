@@ -198,8 +198,19 @@ const initManufacturers = [
 const initProjects = [
   { id:1, name:"Schulhausplatz Kreuzlingen", client:"Stadt Kreuzlingen", status:"Offerte", created:"2026-03-15",
     wizard:{ ages:["Schulkinder (6–12)","Altersgemischt"], users:120, locType:"Schule", mat:"Robinie", floor:"EPDM (gebunden)" },
-    area:{ w:20, h:15 }, placed:[ {eqId:1,x:80,y:60,rot:0}, {eqId:3,x:200,y:120,rot:0}, {eqId:6,x:320,y:80,rot:0}, {eqId:7,x:160,y:220,rot:0} ],
-    obstacles:[ {type:"tree",x:50,y:180,r:15,label:"Eiche"}, {type:"building",x:380,y:20,w:80,h:40,label:"Schulgebäude"} ] },
+    geo:{ lat:47.6488, lng:9.1735, zoom:19 },
+    area:{ w:20, h:15 },
+    placed:[
+      { id:"p1", eqId:102, lat:47.648810, lng:9.173490, rot:0 },
+      { id:"p2", eqId:202, lat:47.648780, lng:9.173580, rot:0 },
+      { id:"p3", eqId:3,   lat:47.648760, lng:9.173400, rot:0 },
+      { id:"p4", eqId:401, lat:47.648840, lng:9.173530, rot:0 },
+    ],
+    obstacles:[
+      { id:"o1", type:"tree",     lat:47.648870, lng:9.173420, r:3, label:"Eiche" },
+      { id:"o2", type:"building", lat:47.648910, lng:9.173620, w:8, h:5, label:"Schulgebäude" },
+    ],
+  },
 ];
 
 const initWorkPrices = [
@@ -846,303 +857,750 @@ function Wizard({projects,setProjects,setPage,setActiveProjectId}) {
 }
 
 /* ═══════════════════════════ 2D PLANNER ═══════════════════════════ */
+/* ═══════════════════════════ PROFESSIONAL PLANNER (Leaflet + Satellite) ═══════════════════════════ */
+// Fall zone calculation per equipment category, following EN 1176 and KOMPAN specs.
+// Returns {shape:"circle"|"rect", params} in METERS relative to equipment center.
+function calcFallZone(eq) {
+  if (!eq || !eq.fallZone || eq.fallZone <= 0) return null;
+  const [w, h] = eq.size || [2, 2];
+  const fz = eq.fallZone;
+  // Swings: rectangular zone extending forward and backward of the swing direction
+  if (eq.cat === "Schaukeln") {
+    // Swing swings along h-axis; frontal clearance = 2× swing height (EN 1176)
+    return { shape: "rect", w: w + 1.0, h: h + fz * 2 };
+  }
+  // Carousels: circular zone = radius of carousel + fallZone
+  if (eq.cat === "Karussell") {
+    const r = Math.max(w, h) / 2 + fz;
+    return { shape: "circle", r };
+  }
+  // Slides: rectangle extending forward (in h-direction) from end of slide
+  if (eq.cat === "Rutschen") {
+    return { shape: "rect", w: w + 1.0, h: h + fz + 1.5 };
+  }
+  // All others (climbing, see-saws, houses, balance): rectangle equipment + fallZone margin
+  return { shape: "rect", w: w + fz * 2, h: h + fz * 2 };
+}
+
+// Detect if 2 placed items' fall zones overlap (in meters; positions in meters)
+function zonesOverlap(a, ea, b, eb) {
+  const za = calcFallZone(ea); const zb = calcFallZone(eb);
+  if (!za || !zb) return false;
+  // approximate both as bounding circles for simplicity
+  const ra = za.shape === "circle" ? za.r : Math.max(za.w, za.h) / 2;
+  const rb = zb.shape === "circle" ? zb.r : Math.max(zb.w, zb.h) / 2;
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy) < ra + rb;
+}
+
 function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
-  const canvasRef=useRef(null);
   const [view,setView]=useState("2d");
-  const [palette,setPalette]=useState(false);
-  const [drag,setDrag]=useState(null);
   const [selected,setSelected]=useState(null);
-  const [obstacleMode,setObstacleMode]=useState(null);
+  const [tool,setTool]=useState("select"); // select | tree | building | measure
+  const [libOpen,setLibOpen]=useState(true);
+  const [libSearch,setLibSearch]=useState("");
+  const [libCat,setLibCat]=useState("Alle");
   const [conflicts,setConflicts]=useState([]);
+  const [mapStyle,setMapStyle]=useState("satellite"); // satellite | streets | hybrid
+  const [addrQuery,setAddrQuery]=useState("");
+
+  const mapContainerRef=useRef(null);
+  const mapRef=useRef(null);
+  const layersRef=useRef({ equipment:null, fallZones:null, obstacles:null, area:null });
+  const threeContainerRef=useRef(null);
   const threeRef=useRef(null);
   const animRef=useRef(null);
 
-  const SCALE=20; // 1m = 20px
-  const PAD=40;
-  const CW=(project.area.w)*SCALE+PAD*2;
-  const CH=(project.area.h)*SCALE+PAD*2;
-
   const placed=project.placed||[];
   const obstacles=project.obstacles||[];
+
+  // Project location — saved per project, default Bern if missing
+  const projectCenter = project.geo || { lat: 46.9480, lng: 7.4474, zoom: 19 };
 
   function updateProject(fn){
     setProjects(prev=>prev.map(p=>p.id===project.id?fn(p):p));
   }
 
-  // Collision detection
+  // Conflict detection between dynamic equipment
   useEffect(()=>{
-    const cs=[];
-    const dyns=placed.filter(pl=>{const e=equipment.find(x=>x.id===pl.eqId);return e&&DYNAMIC_CATS.includes(e.cat)&&e.fallZone>0;});
-    for(let i=0;i<dyns.length;i++){
-      const a=dyns[i]; const ea=equipment.find(x=>x.id===a.eqId);
-      for(let j=i+1;j<dyns.length;j++){
-        const b=dyns[j]; const eb=equipment.find(x=>x.id===b.eqId);
-        const dist=Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);
-        const minDist=(ea.fallZone+eb.fallZone)*SCALE;
-        if(dist<minDist) cs.push(a.id+"_"+b.id);
+    const conf=[];
+    const dynamic=placed.filter(pl=>{
+      const e=equipment.find(x=>x.id===pl.eqId);
+      return e && DYNAMIC_CATS.includes(e.cat) && e.fallZone > 0;
+    });
+    for(let i=0;i<dynamic.length;i++){
+      for(let j=i+1;j<dynamic.length;j++){
+        const ea=equipment.find(x=>x.id===dynamic[i].eqId);
+        const eb=equipment.find(x=>x.id===dynamic[j].eqId);
+        if(zonesOverlap(dynamic[i],ea,dynamic[j],eb)) conf.push([dynamic[i].id,dynamic[j].id]);
       }
     }
-    setConflicts(cs);
+    setConflicts(conf);
   },[placed,equipment]);
 
-  function draw(){
-    const cv=canvasRef.current; if(!cv) return;
-    const ctx=cv.getContext("2d");
-    ctx.clearRect(0,0,CW,CH);
-    // Background
-    ctx.fillStyle="#e8f5e9"; ctx.fillRect(0,0,CW,CH);
+  /* ────── LEAFLET MAP INIT ────── */
+  useEffect(()=>{
+    if(view!=="2d"||!mapContainerRef.current||!window.L) return;
+    if(mapRef.current){ mapRef.current.invalidateSize(); return; }
+
+    const L=window.L;
+    const map=L.map(mapContainerRef.current,{
+      center:[projectCenter.lat,projectCenter.lng],
+      zoom:projectCenter.zoom,
+      maxZoom:22, zoomControl:false, preferCanvas:false,
+    });
+    L.control.zoom({position:"topright"}).addTo(map);
+    L.control.scale({imperial:false,position:"bottomright"}).addTo(map);
+
+    // Tile layers
+    const layers={
+      satellite: L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        { maxZoom:22, maxNativeZoom:19, attribution:"Tiles © Esri" }
+      ),
+      streets: L.tileLayer(
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        { maxZoom:19, attribution:"© OpenStreetMap" }
+      ),
+      hybrid: L.layerGroup([
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:22,maxNativeZoom:19}),
+        L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",{maxZoom:22,maxNativeZoom:19,opacity:.9}),
+      ]),
+    };
+    layers[mapStyle].addTo(map);
+    map._layerRefs=layers;
+
+    // Layer groups for dynamic items
+    layersRef.current.fallZones=L.layerGroup().addTo(map);
+    layersRef.current.equipment=L.layerGroup().addTo(map);
+    layersRef.current.obstacles=L.layerGroup().addTo(map);
+    layersRef.current.area=L.layerGroup().addTo(map);
+
+    // Click handler for tools
+    map.on("click",(e)=>{
+      if(tool==="tree"){
+        const id=uid();
+        updateProject(p=>({...p,obstacles:[...(p.obstacles||[]),{id,type:"tree",lat:e.latlng.lat,lng:e.latlng.lng,r:3,label:"Baum"}]}));
+      } else if(tool==="building"){
+        const id=uid();
+        updateProject(p=>({...p,obstacles:[...(p.obstacles||[]),{id,type:"building",lat:e.latlng.lat,lng:e.latlng.lng,w:6,h:4,label:"Gebäude"}]}));
+      } else {
+        setSelected(null);
+      }
+    });
+
+    // Save view changes
+    map.on("moveend zoomend",()=>{
+      const c=map.getCenter();
+      updateProject(p=>({...p,geo:{lat:c.lat,lng:c.lng,zoom:map.getZoom()}}));
+    });
+
+    mapRef.current=map;
+    return ()=>{ map.remove(); mapRef.current=null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[view]);
+
+  // Switch tile layer
+  useEffect(()=>{
+    if(!mapRef.current||!mapRef.current._layerRefs) return;
+    const refs=mapRef.current._layerRefs;
+    Object.values(refs).forEach(l=>{ try{ mapRef.current.removeLayer(l); }catch(e){} });
+    refs[mapStyle].addTo(mapRef.current);
+  },[mapStyle]);
+
+  // Sync equipment / fallZones / obstacles
+  useEffect(()=>{
+    if(!mapRef.current||!window.L) return;
+    const L=window.L;
+    const map=mapRef.current;
+    const { equipment:eqLayer, fallZones:fzLayer, obstacles:obLayer } = layersRef.current;
+    if(!eqLayer) return;
+    eqLayer.clearLayers(); fzLayer.clearLayers(); obLayer.clearLayers();
+
+    const mToDeg=(m)=>m/111320; // approx at equator, good enough for small area
+
+    // FALL ZONES (render first, below equipment)
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      const zone=calcFallZone(eq); if(!zone) return;
+      const inConflict=conflicts.some(c=>c.includes(pl.id));
+      const col=inConflict?"#DC2626":"#F59E0B";
+      const fill=inConflict?"#DC262633":"#F59E0B22";
+      if(zone.shape==="circle"){
+        L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{
+          radius:zone.r, color:col, weight:2, fillColor:fill, fillOpacity:.3, dashArray:"6 4",
+        }).addTo(fzLayer);
+      } else {
+        // rectangle: compute corners at {w,h} in meters around center
+        const rot=(pl.rot||0)*Math.PI/180;
+        const hw=zone.w/2, hh=zone.h/2;
+        const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>{
+          const rx=x*Math.cos(rot)-y*Math.sin(rot);
+          const ry=x*Math.sin(rot)+y*Math.cos(rot);
+          const lat=(pl.lat||projectCenter.lat)+mToDeg(ry);
+          const lng=(pl.lng||projectCenter.lng)+mToDeg(rx)/Math.cos((pl.lat||projectCenter.lat)*Math.PI/180);
+          return [lat,lng];
+        });
+        L.polygon(corners,{ color:col, weight:2, fillColor:fill, fillOpacity:.3, dashArray:"6 4" }).addTo(fzLayer);
+      }
+    });
+
+    // EQUIPMENT MARKERS
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      const isSel=selected&&selected.type==="eq"&&selected.id===pl.id;
+      const icon=L.divIcon({
+        className:"",
+        html:`<div style="
+          width:46px;height:46px;border-radius:50%;
+          background:${eq.color};
+          border:3px solid ${isSel?"#1B4332":"white"};
+          box-shadow:0 3px 10px rgba(0,0,0,0.35);
+          display:flex;align-items:center;justify-content:center;
+          font-size:22px;cursor:grab;
+          transform:${isSel?"scale(1.15)":"scale(1)"};
+          transition:transform .12s ease;
+        ">${eq.icon}</div>`,
+        iconSize:[46,46], iconAnchor:[23,23],
+      });
+      const m=L.marker([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{
+        icon, draggable:true, riseOnHover:true,
+      }).addTo(eqLayer);
+      m.bindTooltip(`<b>${eq.name}</b><br><small>${eq.cat} · ${fmt(eq.price)}</small>`,{direction:"top",offset:[0,-20]});
+      m.on("click",()=>setSelected({type:"eq",id:pl.id}));
+      m.on("dragend",(e)=>{
+        const ll=e.target.getLatLng();
+        updateProject(p=>({...p,placed:p.placed.map(x=>x.id===pl.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
+      });
+    });
+
+    // OBSTACLES (trees, buildings)
+    obstacles.forEach(ob=>{
+      if(ob.type==="tree"){
+        const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
+        const icon=L.divIcon({
+          className:"",
+          html:`<div style="
+            width:38px;height:38px;border-radius:50%;
+            background:#065F46;border:3px solid ${isSel?"#D4A853":"white"};
+            box-shadow:0 3px 8px rgba(0,0,0,0.35);
+            display:flex;align-items:center;justify-content:center;
+            font-size:20px;cursor:grab;
+          ">🌳</div>`,
+          iconSize:[38,38], iconAnchor:[19,19],
+        });
+        const m=L.marker([ob.lat,ob.lng],{icon,draggable:true}).addTo(obLayer);
+        m.bindTooltip(`${ob.label} (Ø${(ob.r||3)*2}m)`,{direction:"top",offset:[0,-16]});
+        m.on("click",()=>setSelected({type:"ob",id:ob.id}));
+        m.on("dragend",(e)=>{
+          const ll=e.target.getLatLng();
+          updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===ob.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
+        });
+        // Tree crown circle
+        L.circle([ob.lat,ob.lng],{
+          radius:ob.r||3, color:"#065F46", weight:1.5, fillColor:"#10B981", fillOpacity:.22,
+        }).addTo(obLayer);
+      } else if(ob.type==="building"){
+        const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
+        const mToDegLat=(m)=>m/111320;
+        const lat=ob.lat, lng=ob.lng;
+        const hw=(ob.w||6)/2, hh=(ob.h||4)/2;
+        const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>[
+          lat+mToDegLat(y), lng+mToDegLat(x)/Math.cos(lat*Math.PI/180)
+        ]);
+        L.polygon(corners,{
+          color:"#374151", weight:2, fillColor:"#9CA3AF", fillOpacity:.6,
+        }).addTo(obLayer);
+        // Draggable center marker
+        const icon=L.divIcon({
+          className:"",
+          html:`<div style="
+            width:32px;height:32px;border-radius:6px;
+            background:#374151;border:2px solid ${isSel?"#D4A853":"white"};
+            box-shadow:0 2px 6px rgba(0,0,0,0.3);
+            display:flex;align-items:center;justify-content:center;
+            color:white;font-size:16px;cursor:grab;
+          ">🏠</div>`,
+          iconSize:[32,32], iconAnchor:[16,16],
+        });
+        const m=L.marker([lat,lng],{icon,draggable:true}).addTo(obLayer);
+        m.bindTooltip(ob.label,{direction:"top",offset:[0,-14]});
+        m.on("click",()=>setSelected({type:"ob",id:ob.id}));
+        m.on("dragend",(e)=>{
+          const ll=e.target.getLatLng();
+          updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===ob.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
+        });
+      }
+    });
+  },[placed,obstacles,selected,conflicts,equipment,view]);
+
+  // Cursor feedback
+  useEffect(()=>{
+    if(!mapContainerRef.current) return;
+    const cur={ select:"grab", tree:"copy", building:"copy", measure:"crosshair" }[tool]||"grab";
+    mapContainerRef.current.style.cursor=cur;
+  },[tool]);
+
+  /* ────── ACTIONS ────── */
+  function addEquipment(eq){
+    if(!mapRef.current) return;
+    const c=mapRef.current.getCenter();
+    const id=uid();
+    updateProject(p=>({...p,placed:[...(p.placed||[]),{id,eqId:eq.id,lat:c.lat,lng:c.lng,rot:0}]}));
+    setSelected({type:"eq",id});
+  }
+  function deleteSelected(){
+    if(!selected) return;
+    if(selected.type==="eq") updateProject(p=>({...p,placed:p.placed.filter(x=>x.id!==selected.id)}));
+    else updateProject(p=>({...p,obstacles:p.obstacles.filter(x=>x.id!==selected.id)}));
+    setSelected(null);
+  }
+  function rotateSelected(deg){
+    if(!selected||selected.type!=="eq") return;
+    updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selected.id?{...x,rot:((x.rot||0)+deg)%360}:x)}));
+  }
+  function autoPlace(){
+    if(!mapRef.current) return;
+    const ages=project.wizard?.ages||[];
+    const suitable=equipment.filter(e=>ages.length===0||ages.some(a=>e.age===a||e.age==="Altersgemischt")).slice(0,6);
+    const c=mapRef.current.getCenter();
+    const mToDeg=(m)=>m/111320;
+    const cols=3;
+    const newPlaced=suitable.map((eq,i)=>{
+      const row=Math.floor(i/cols), col=i%cols;
+      const dx=(col-1)*7, dy=(row-0.5)*7;
+      return { id:uid(), eqId:eq.id,
+        lat:c.lat+mToDeg(dy),
+        lng:c.lng+mToDeg(dx)/Math.cos(c.lat*Math.PI/180),
+        rot:0 };
+    });
+    updateProject(p=>({...p,placed:[...(p.placed||[]),...newPlaced]}));
+  }
+  async function searchAddress(){
+    if(!addrQuery||!mapRef.current) return;
+    try{
+      const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addrQuery)}&countrycodes=ch,de,at,li&limit=1`);
+      const data=await r.json();
+      if(data[0]){
+        mapRef.current.setView([parseFloat(data[0].lat),parseFloat(data[0].lon)],19);
+      }
+    }catch(e){ console.warn("geocode failed",e); }
+  }
+
+  /* ────── 3D VIEW (Three.js) ────── */
+  useEffect(()=>{
+    if(view!=="3d"||!threeContainerRef.current) return;
+
+    const container=threeContainerRef.current;
+    while(container.firstChild) container.removeChild(container.firstChild);
+
+    const W=container.clientWidth, H=container.clientHeight||500;
+    const scene=new THREE.Scene();
+    scene.background=new THREE.Color("#87CEEB"); // sky blue
+    scene.fog=new THREE.Fog("#B8D5E8",50,200);
+
+    const camera=new THREE.PerspectiveCamera(60,W/H,0.1,500);
+    camera.position.set(25,30,35);
+    camera.lookAt(0,0,0);
+
+    const renderer=new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(W,H);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled=true;
+    renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    container.appendChild(renderer.domElement);
+
+    // Lighting
+    const hemi=new THREE.HemisphereLight("#ffffff","#8B7355",0.6); scene.add(hemi);
+    const sun=new THREE.DirectionalLight("#fffaf0",1.1);
+    sun.position.set(25,40,15); sun.castShadow=true;
+    sun.shadow.mapSize.width=2048; sun.shadow.mapSize.height=2048;
+    sun.shadow.camera.left=-40; sun.shadow.camera.right=40;
+    sun.shadow.camera.top=40; sun.shadow.camera.bottom=-40;
+    scene.add(sun);
+
+    // Ground – grass with subtle pattern
+    const groundSize=80;
+    const groundGeo=new THREE.PlaneGeometry(groundSize,groundSize,32,32);
+    const groundMat=new THREE.MeshStandardMaterial({color:"#9CAF88",roughness:.95});
+    const ground=new THREE.Mesh(groundGeo,groundMat);
+    ground.rotation.x=-Math.PI/2; ground.receiveShadow=true;
+    scene.add(ground);
+
     // Grid
-    ctx.strokeStyle="#c8e6c9"; ctx.lineWidth=.5;
-    for(let x=PAD;x<=CW-PAD;x+=SCALE){ctx.beginPath();ctx.moveTo(x,PAD);ctx.lineTo(x,CH-PAD);ctx.stroke();}
-    for(let y=PAD;y<=CH-PAD;y+=SCALE){ctx.beginPath();ctx.moveTo(PAD,y);ctx.lineTo(CW-PAD,y);ctx.stroke();}
-    // Area border
-    ctx.strokeStyle=T.green; ctx.lineWidth=2;
-    ctx.strokeRect(PAD,PAD,project.area.w*SCALE,project.area.h*SCALE);
-    // Dimensions
-    ctx.fillStyle=T.muted; ctx.font="11px IBM Plex Sans";
-    ctx.fillText(`${project.area.w}m`,CW/2-10,CH-14);
-    ctx.save();ctx.translate(12,CH/2);ctx.rotate(-Math.PI/2);ctx.fillText(`${project.area.h}m`,0,0);ctx.restore();
+    const grid=new THREE.GridHelper(groundSize,40,"#5A7153","#7A9270");
+    grid.material.opacity=.4; grid.material.transparent=true;
+    scene.add(grid);
+
+    // Scale: 1 unit = 1 meter; map lat/lng → local XZ via projection around center
+    const mapCenter=projectCenter;
+    const mPerLat=111320;
+    const mPerLng=111320*Math.cos(mapCenter.lat*Math.PI/180);
+    const toLocal=(lat,lng)=>[(lng-mapCenter.lng)*mPerLng,(lat-mapCenter.lat)*mPerLat];
+
+    // Equipment 3D models (simplified but recognizable by category)
+    function buildEqMesh(eq,pl){
+      const g=new THREE.Group();
+      const [w,h]=eq.size||[2,2];
+      const col=new THREE.Color(eq.color||"#3B82F6");
+      if(eq.cat==="Schaukeln"){
+        // A-frame posts + top bar
+        const postMat=new THREE.MeshStandardMaterial({color:"#9CA3AF",metalness:.6,roughness:.3});
+        const barMat=new THREE.MeshStandardMaterial({color:col,metalness:.4,roughness:.5});
+        [[-w/2,0],[w/2,0]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,2.5,8),postMat);
+          p.position.set(x,1.25,z); p.castShadow=true; g.add(p);
+        });
+        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w,8),barMat);
+        bar.rotation.z=Math.PI/2; bar.position.y=2.5; bar.castShadow=true; g.add(bar);
+        // seats
+        const nSeats=w>3?2:1;
+        for(let i=0;i<nSeats;i++){
+          const seat=new THREE.Mesh(new THREE.BoxGeometry(.6,.1,.3),new THREE.MeshStandardMaterial({color:"#1F2937"}));
+          seat.position.set(-0.6+i*1.2,1.0,0); seat.castShadow=true; g.add(seat);
+        }
+      } else if(eq.cat==="Rutschen"){
+        const mat=new THREE.MeshStandardMaterial({color:col,metalness:.4,roughness:.4});
+        // platform
+        const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.15,1.2),mat);
+        plat.position.set(-h/2+.6,1.8,0); plat.castShadow=true; g.add(plat);
+        // slide
+        const slide=new THREE.Mesh(new THREE.BoxGeometry(h,.1,.8),mat);
+        slide.position.set(0,.9,0); slide.rotation.z=Math.atan2(1.8,h); slide.castShadow=true; g.add(slide);
+      } else if(eq.cat==="Karussell"){
+        const mat=new THREE.MeshStandardMaterial({color:col,metalness:.5,roughness:.3});
+        const r=Math.max(w,h)/2;
+        const base=new THREE.Mesh(new THREE.CylinderGeometry(r,r,.15,24),mat);
+        base.position.y=.2; base.castShadow=true; g.add(base);
+        const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,1.2,8),new THREE.MeshStandardMaterial({color:"#6B7280"}));
+        pole.position.y=.85; g.add(pole);
+      } else if(eq.cat==="Wipptiere"){
+        const mat=new THREE.MeshStandardMaterial({color:col});
+        const b=new THREE.Mesh(new THREE.BoxGeometry(w,.6,h*.5),mat);
+        b.position.y=.5; b.castShadow=true; g.add(b);
+      } else if(eq.cat==="Spielhäuser"){
+        const mat=new THREE.MeshStandardMaterial({color:col});
+        const base=new THREE.Mesh(new THREE.BoxGeometry(w,1.5,h),mat);
+        base.position.y=.75; base.castShadow=true; g.add(base);
+        const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,h)*.75,1,4),new THREE.MeshStandardMaterial({color:"#7C2D12"}));
+        roof.position.y=2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
+      } else if(eq.cat==="Klettern"){
+        const mat=new THREE.MeshStandardMaterial({color:col});
+        for(let i=0;i<4;i++){
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,2.5,6),mat);
+          const a=(i/4)*Math.PI*2;
+          p.position.set(Math.cos(a)*w/2,1.25,Math.sin(a)*h/2); p.castShadow=true; g.add(p);
+        }
+      } else if(eq.cat==="Sandspiel"){
+        const mat=new THREE.MeshStandardMaterial({color:"#D4B088"});
+        const box=new THREE.Mesh(new THREE.BoxGeometry(w,.3,h),mat);
+        box.position.y=.15; box.castShadow=true; g.add(box);
+      } else if(eq.cat==="Balancieren"){
+        const mat=new THREE.MeshStandardMaterial({color:col});
+        const b=new THREE.Mesh(new THREE.BoxGeometry(Math.max(w,h),.25,.2),mat);
+        b.position.y=.35; b.castShadow=true; g.add(b);
+      } else {
+        const b=new THREE.Mesh(new THREE.BoxGeometry(w,1,h),new THREE.MeshStandardMaterial({color:col}));
+        b.position.y=.5; b.castShadow=true; g.add(b);
+      }
+      // Position group
+      const [x,z]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+      g.position.set(x,0,-z);
+      g.rotation.y=(pl.rot||0)*Math.PI/180;
+      return g;
+    }
+
+    placed.forEach(pl=>{
+      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      scene.add(buildEqMesh(eq,pl));
+      // fall zone ring on ground
+      const zone=calcFallZone(eq);
+      if(zone){
+        const [x,z]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
+        const mat=new THREE.MeshBasicMaterial({color:"#F59E0B",transparent:true,opacity:.3,side:THREE.DoubleSide});
+        if(zone.shape==="circle"){
+          const ring=new THREE.Mesh(new THREE.RingGeometry(zone.r-.1,zone.r,32),mat);
+          ring.rotation.x=-Math.PI/2; ring.position.set(x,.02,-z); scene.add(ring);
+        } else {
+          const rect=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),mat);
+          rect.rotation.x=-Math.PI/2; rect.rotation.z=(pl.rot||0)*Math.PI/180;
+          rect.position.set(x,.02,-z); scene.add(rect);
+        }
+      }
+    });
 
     // Obstacles
-    obstacles.forEach(o=>{
-      if(o.type==="tree"){
-        ctx.beginPath();ctx.arc(o.x,o.y,o.r,0,Math.PI*2);
-        ctx.fillStyle="rgba(34,139,34,.4)";ctx.fill();
-        ctx.strokeStyle="#1a6e1a";ctx.lineWidth=1.5;ctx.stroke();
-        ctx.fillStyle="#1a6e1a";ctx.font="10px IBM Plex Sans";ctx.fillText("🌳 "+o.label,o.x-16,o.y+o.r+12);
-      } else {
-        ctx.fillStyle="rgba(120,120,120,.3)";ctx.fillRect(o.x,o.y,o.w,o.h);
-        ctx.strokeStyle="#555";ctx.lineWidth=1.5;ctx.strokeRect(o.x,o.y,o.w,o.h);
-        ctx.fillStyle="#555";ctx.font="10px IBM Plex Sans";ctx.fillText("🏠 "+o.label,o.x+4,o.y-4);
+    obstacles.forEach(ob=>{
+      const [x,z]=toLocal(ob.lat,ob.lng);
+      if(ob.type==="tree"){
+        const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.2,.3,2,8),new THREE.MeshStandardMaterial({color:"#5C3317"}));
+        trunk.position.set(x,1,-z); trunk.castShadow=true; scene.add(trunk);
+        const crown=new THREE.Mesh(new THREE.SphereGeometry(ob.r||3,16,12),new THREE.MeshStandardMaterial({color:"#228B22"}));
+        crown.position.set(x,3+(ob.r||3)*.3,-z); crown.castShadow=true; scene.add(crown);
+      } else if(ob.type==="building"){
+        const b=new THREE.Mesh(new THREE.BoxGeometry(ob.w||6,3,ob.h||4),new THREE.MeshStandardMaterial({color:"#D1D5DB"}));
+        b.position.set(x,1.5,-z); b.castShadow=true; b.receiveShadow=true; scene.add(b);
+        const roof=new THREE.Mesh(new THREE.BoxGeometry((ob.w||6)+.3,.3,(ob.h||4)+.3),new THREE.MeshStandardMaterial({color:"#7C2D12"}));
+        roof.position.set(x,3.15,-z); scene.add(roof);
       }
     });
 
-    // Fall zones
-    placed.forEach(pl=>{
-      const e=equipment.find(x=>x.id===pl.eqId); if(!e||!e.fallZone||!DYNAMIC_CATS.includes(e.cat)) return;
-      const isConflict=conflicts.some(c=>c.includes(pl.id));
-      ctx.beginPath();ctx.arc(pl.x,pl.y,e.fallZone*SCALE,0,Math.PI*2);
-      ctx.fillStyle=isConflict?"rgba(220,38,38,.15)":"rgba(255,165,0,.12)";ctx.fill();
-      ctx.strokeStyle=isConflict?T.red:"#f59e0b";ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
-    });
-
-    // Equipment
-    placed.forEach(pl=>{
-      const e=equipment.find(x=>x.id===pl.eqId); if(!e) return;
-      const w=e.size[0]*SCALE; const h=e.size[1]*SCALE;
-      const isSelected=selected===pl.id;
-      ctx.fillStyle=e.color+"33";
-      ctx.strokeStyle=isSelected?T.gold:e.color;
-      ctx.lineWidth=isSelected?2.5:1.5;
-      ctx.beginPath();ctx.roundRect(pl.x-w/2,pl.y-h/2,w,h,4);ctx.fill();ctx.stroke();
-      ctx.font="bold 18px sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
-      ctx.fillStyle="#000";ctx.fillText(e.icon,pl.x,pl.y);
-      ctx.font="bold 9px IBM Plex Sans";ctx.fillStyle=T.text;
-      ctx.fillText(e.name.split(" ")[0],pl.x,pl.y+h/2+10);
-    });
-  }
-
-  useEffect(()=>{draw();},[placed,obstacles,selected,conflicts,equipment]);
-
-  function getCanvasPos(e){
-    const rect=canvasRef.current.getBoundingClientRect();
-    return{x:e.clientX-rect.left,y:e.clientY-rect.top};
-  }
-  function onMouseDown(e){
-    const {x,y}=getCanvasPos(e);
-    const hit=placed.slice().reverse().find(pl=>{
-      const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return false;
-      return Math.abs(x-pl.x)<eq.size[0]*SCALE/2+4&&Math.abs(y-pl.y)<eq.size[1]*SCALE/2+4;
-    });
-    if(hit){setDrag({id:hit.id,ox:x-hit.x,oy:y-hit.y});setSelected(hit.id);}
-    else setSelected(null);
-  }
-  function onMouseMove(e){
-    if(!drag) return;
-    const {x,y}=getCanvasPos(e);
-    const nx=Math.max(PAD,Math.min(CW-PAD,x-drag.ox));
-    const ny=Math.max(PAD,Math.min(CH-PAD,y-drag.oy));
-    updateProject(p=>({...p,placed:p.placed.map(pl=>pl.id===drag.id?{...pl,x:nx,y:ny}:pl)}));
-  }
-  function onMouseUp(){setDrag(null);}
-
-  function addEquipment(eq){
-    const pl={id:String(uid()),eqId:eq.id,x:CW/2+(Math.random()-0.5)*40,y:CH/2+(Math.random()-0.5)*40,rot:0};
-    updateProject(p=>({...p,placed:[...p.placed,pl]}));
-    setPalette(false);
-  }
-  function removeSelected(){
-    if(selected){updateProject(p=>({...p,placed:p.placed.filter(pl=>pl.id!==selected)}));setSelected(null);}
-  }
-  function addObstacle(type){
-    if(type==="tree") updateProject(p=>({...p,obstacles:[...p.obstacles,{type:"tree",x:CW/2,y:CH/2,r:15,label:"Baum"}]}));
-    else updateProject(p=>({...p,obstacles:[...p.obstacles,{type:"building",x:CW/2-30,y:CH/2-20,w:60,h:40,label:"Gebäude"}]}));
-    setObstacleMode(null);
-  }
-  function aiPlace(){
-    const suitable=equipment.filter(e=>project.wizard?.ages?.some(a=>e.age===a||e.age==="Altersgemischt")).slice(0,5);
-    const cols=Math.ceil(Math.sqrt(suitable.length));
-    const newPlaced=suitable.map((eq,i)=>{
-      const col=i%cols; const row=Math.floor(i/cols);
-      const x=PAD+col*(project.area.w*SCALE/cols)+(project.area.w*SCALE/cols)/2;
-      const y=PAD+row*(project.area.h*SCALE/Math.ceil(suitable.length/cols))+(project.area.h*SCALE/Math.ceil(suitable.length/cols))/2;
-      return{id:String(uid()),eqId:eq.id,x,y,rot:0};
-    });
-    updateProject(p=>({...p,placed:newPlaced}));
-  }
-
-  // Three.js 3D view
-  useEffect(()=>{
-    if(view!=="3d"||!threeRef.current) return;
-    const W=threeRef.current.clientWidth||600;
-    const H=threeRef.current.clientHeight||400;
-    const scene=new THREE.Scene();
-    scene.background=new THREE.Color("#87CEEB");
-    const camera=new THREE.PerspectiveCamera(50,W/H,.1,1000);
-    camera.position.set(12,14,18);camera.lookAt(6,0,6);
-    const renderer=new THREE.WebGLRenderer({antialias:true});
-    renderer.setSize(W,H);renderer.shadowMap.enabled=true;
-    threeRef.current.innerHTML="";threeRef.current.appendChild(renderer.domElement);
-    // Lights
-    scene.add(new THREE.AmbientLight(0xffffff,.6));
-    const sun=new THREE.DirectionalLight(0xffffff,.8);sun.position.set(10,20,10);sun.castShadow=true;scene.add(sun);
-    // Ground
-    const ground=new THREE.Mesh(new THREE.PlaneGeometry(project.area.w,project.area.h),new THREE.MeshLambertMaterial({color:0x7ec850}));
-    ground.rotation.x=-Math.PI/2;ground.position.set(project.area.w/2,0,project.area.h/2);ground.receiveShadow=true;scene.add(ground);
-    // Border fence
-    const fenceMat=new THREE.MeshLambertMaterial({color:0x8B4513});
-    [[0,0,project.area.w,0.1],[0,0,0.1,project.area.h],[project.area.w,0,0.1,project.area.h],[0,project.area.h,project.area.w,0.1]].forEach(([x,z,w,d])=>{
-      const f=new THREE.Mesh(new THREE.BoxGeometry(w,.6,d),fenceMat);f.position.set(x+w/2,.3,z+d/2);scene.add(f);
-    });
-    // Equipment
-    const COL_MAP={Schaukeln:0x3B82F6,Rutschen:0xEF4444,Klettern:0x8B5CF6,Sandspiel:0xF59E0B,Wipptiere:0x10B981,Karussell:0xEC4899,Balancieren:0x6366F1,Spielhäuser:0xD97706,Fallschutz:0x059669};
-    placed.forEach(pl=>{
-      const e=equipment.find(x=>x.id===pl.eqId); if(!e) return;
-      const rx=(pl.x-PAD)/SCALE; const rz=(pl.y-PAD)/SCALE;
-      const col=COL_MAP[e.cat]||0x888888;
-      const mat=new THREE.MeshLambertMaterial({color:col});
-      let mesh;
-      if(e.cat==="Schaukeln"){
-        const g=new THREE.Group();
-        [[-0.8,0],[0.8,0]].forEach(([ox])=>{const p=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,2.5),mat);p.position.set(ox,1.25,0);g.add(p);});
-        const top=new THREE.Mesh(new THREE.BoxGeometry(1.8,.1,.1),mat);top.position.set(0,2.5,0);g.add(top);
-        const seat=new THREE.Mesh(new THREE.BoxGeometry(.4,.08,.3),new THREE.MeshLambertMaterial({color:0xF59E0B}));seat.position.set(0,1,.0);g.add(seat);
-        g.position.set(rx,0,rz);scene.add(g);mesh=g;
-      } else if(e.cat==="Rutschen"){
-        const g=new THREE.Group();
-        const tower=new THREE.Mesh(new THREE.BoxGeometry(1,2,1),mat);tower.position.set(0,1,0);g.add(tower);
-        const slide=new THREE.Mesh(new THREE.BoxGeometry(.6,.05,2),new THREE.MeshLambertMaterial({color:0xC0C0C0}));
-        slide.position.set(0,1,-1.2);slide.rotation.x=-.5;g.add(slide);
-        g.position.set(rx,0,rz);scene.add(g);mesh=g;
-      } else if(e.cat==="Klettern"){
-        const g=new THREE.Group();
-        for(let i=0;i<4;i++){for(let j=0;j<4;j++){
-          const bar=new THREE.Mesh(new THREE.CylinderGeometry(.06,.06,.8),mat);
-          bar.position.set(i*.8-.8+.4,j*.8+.4,i*.8-.8+.4);scene.add(bar);g.add(bar);
-        }}
-        g.position.set(rx,0,rz);scene.add(g);mesh=g;
-      } else {
-        const h=(e.cat==="Spielhäuser")?2.5:(e.cat==="Sandspiel")?.3:1.2;
-        mesh=new THREE.Mesh(new THREE.BoxGeometry(e.size[0]*.8,h,e.size[1]*.8),mat);
-        mesh.position.set(rx,h/2,rz);scene.add(mesh);
-      }
-    });
-    // Trees
-    obstacles.filter(o=>o.type==="tree").forEach(o=>{
-      const rx=(o.x-PAD)/SCALE; const rz=(o.y-PAD)/SCALE;
-      const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15,.2,1.2),new THREE.MeshLambertMaterial({color:0x8B4513}));
-      trunk.position.set(rx,.6,rz);scene.add(trunk);
-      const crown=new THREE.Mesh(new THREE.SphereGeometry(1,8,8),new THREE.MeshLambertMaterial({color:0x228B22}));
-      crown.position.set(rx,2,rz);scene.add(crown);
-    });
+    // Orbit-like rotation
     let angle=0;
-    function animate(){animRef.current=requestAnimationFrame(animate);angle+=.005;camera.position.x=Math.cos(angle)*22+project.area.w/2;camera.position.z=Math.sin(angle)*22+project.area.h/2;camera.position.y=14;camera.lookAt(project.area.w/2,0,project.area.h/2);renderer.render(scene,camera);}
+    function animate(){
+      animRef.current=requestAnimationFrame(animate);
+      angle+=.0015;
+      camera.position.x=Math.cos(angle)*42;
+      camera.position.z=Math.sin(angle)*42;
+      camera.position.y=28;
+      camera.lookAt(0,2,0);
+      renderer.render(scene,camera);
+    }
     animate();
-    return()=>{cancelAnimationFrame(animRef.current);renderer.dispose();};
-  },[view,placed,obstacles,equipment,project.area]);
+
+    threeRef.current={scene,camera,renderer};
+    const onResize=()=>{
+      if(!container) return;
+      const w=container.clientWidth, h=container.clientHeight||500;
+      camera.aspect=w/h; camera.updateProjectionMatrix();
+      renderer.setSize(w,h);
+    };
+    window.addEventListener("resize",onResize);
+
+    return ()=>{
+      if(animRef.current) cancelAnimationFrame(animRef.current);
+      window.removeEventListener("resize",onResize);
+      renderer.dispose();
+    };
+  },[view,placed,obstacles,equipment]);
+
+  /* ────── UI ────── */
+  const selEq=selected&&selected.type==="eq"?placed.find(x=>x.id===selected.id):null;
+  const selEqData=selEq?equipment.find(e=>e.id===selEq.eqId):null;
+  const selOb=selected&&selected.type==="ob"?obstacles.find(x=>x.id===selected.id):null;
+
+  const libFiltered=equipment.filter(e=>{
+    if(libCat!=="Alle"&&e.cat!==libCat) return false;
+    if(libSearch&&!e.name.toLowerCase().includes(libSearch.toLowerCase())&&!(e.artNr||"").toLowerCase().includes(libSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  // ── Toolbar button ──
+  const TB=({active,onClick,title,children,danger})=>(
+    <button onClick={onClick} title={title}
+      style={{width:38,height:38,borderRadius:8,
+        border:`1.5px solid ${active?T.green:T.border}`,
+        background:active?T.green:"white",
+        color:active?"white":(danger?T.red:T.text),
+        cursor:"pointer",fontSize:16,display:"flex",
+        alignItems:"center",justifyContent:"center",
+        transition:"all .12s",fontFamily:"inherit",
+        boxShadow:active?"0 2px 6px rgba(27,67,50,.25)":"none",
+      }}>{children}</button>
+  );
 
   return (
-    <div className="fade-in">
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
-        <div>
-          <div className="syne" style={{fontSize:22,fontWeight:800}}>{project.name}</div>
-          <div style={{color:T.muted,fontSize:13}}>{project.wizard?.locType} · {project.area.w}×{project.area.h}m · {placed.length} Geräte platziert</div>
-        </div>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <div style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,display:"flex",overflow:"hidden"}}>
-            {["2d","3d"].map(v=><button key={v} onClick={()=>setView(v)} style={{padding:"8px 18px",border:"none",background:view===v?T.green:"transparent",color:view===v?"#fff":T.muted,cursor:"pointer",fontFamily:"inherit",fontWeight:600,fontSize:12,textTransform:"uppercase"}}>{v}</button>)}
+    <div className="fade-in" style={{height:"calc(100vh - 80px)",display:"flex",flexDirection:"column",gap:10}}>
+      {/* Top Header Bar */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={()=>{setPage("projects");setActiveProjectId(null);}}
+            style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.muted}}>←</button>
+          <div>
+            <div className="syne" style={{fontSize:20,fontWeight:800,lineHeight:1.1}}>{project.name}</div>
+            <div style={{color:T.muted,fontSize:12}}>{project.client} · {placed.length} Geräte platziert {conflicts.length>0&&<span style={{color:T.red,fontWeight:600}}>· ⚠ {conflicts.length} Konflikt(e)</span>}</div>
           </div>
-          <Btn size="sm" variant="secondary" onClick={aiPlace}>🤖 KI-Platzierung</Btn>
-          <Btn size="sm" onClick={()=>setPalette(true)}>+ Gerät</Btn>
-          {selected&&<Btn size="sm" variant="danger" onClick={removeSelected}>🗑 Entfernen</Btn>}
-          <Btn size="sm" variant="ghost" onClick={()=>addObstacle("tree")}>🌳 Baum</Btn>
-          <Btn size="sm" variant="ghost" onClick={()=>addObstacle("building")}>🏠 Gebäude</Btn>
-          <Btn size="sm" variant="gold" onClick={()=>setPage("quote")}>📄 Offerte</Btn>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <div style={{display:"flex",background:"white",border:`1.5px solid ${T.border}`,borderRadius:10,padding:3}}>
+            <button onClick={()=>setView("2d")}
+              style={{padding:"7px 16px",border:"none",borderRadius:7,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,
+                background:view==="2d"?T.green:"transparent",color:view==="2d"?"white":T.text}}>🗺️ 2D Karte</button>
+            <button onClick={()=>setView("3d")}
+              style={{padding:"7px 16px",border:"none",borderRadius:7,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,
+                background:view==="3d"?T.green:"transparent",color:view==="3d"?"white":T.text}}>🧊 3D Ansicht</button>
+          </div>
+          <Btn onClick={()=>setPage("quote")}>📄 Offerte</Btn>
         </div>
       </div>
-      {conflicts.length>0&&(
-        <div style={{background:T.redLight,border:`1px solid ${T.red}`,borderRadius:8,padding:"10px 16px",marginBottom:12,fontSize:13,color:T.red,display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontWeight:700}}>⚠️ Fallraumkonflikte!</span> {conflicts.length} Überschneidung(en) erkannt — bitte Geräte verschieben
+
+      {/* Main content row */}
+      <div style={{flex:1,display:"flex",gap:10,minHeight:0}}>
+        {/* LEFT – Equipment library */}
+        <div style={{width:libOpen?290:48,background:"white",border:`1px solid ${T.border}`,borderRadius:12,display:"flex",flexDirection:"column",overflow:"hidden",transition:"width .2s ease",boxShadow:T.shadow}}>
+          <div style={{padding:libOpen?"10px 12px":"10px 4px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+            {libOpen&&<div style={{fontWeight:700,fontSize:13}}>📦 Gerätebibliothek</div>}
+            <button onClick={()=>setLibOpen(v=>!v)} title={libOpen?"Einklappen":"Ausklappen"}
+              style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:16,padding:4}}>
+              {libOpen?"◀":"▶"}
+            </button>
+          </div>
+          {libOpen&&<>
+            <div style={{padding:"8px 10px",borderBottom:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:6}}>
+              <input value={libSearch} onChange={e=>setLibSearch(e.target.value)} placeholder="🔍 Suchen…"
+                style={{padding:"6px 9px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",background:T.bg,outline:"none"}}/>
+              <select value={libCat} onChange={e=>setLibCat(e.target.value)}
+                style={{padding:"6px 9px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,fontFamily:"inherit",background:T.bg,cursor:"pointer",outline:"none"}}>
+                {["Alle",...CATS].map(c=><option key={c}>{c}</option>)}
+              </select>
+              <button onClick={autoPlace} style={{padding:"6px 9px",border:`1.5px solid ${T.gold}`,background:T.gold+"15",borderRadius:6,fontSize:12,fontWeight:600,color:"#8B6914",cursor:"pointer",fontFamily:"inherit"}}>✨ KI auto-platzieren</button>
+            </div>
+            <div style={{flex:1,overflow:"auto",padding:"8px 10px",display:"flex",flexDirection:"column",gap:5}}>
+              {libFiltered.length===0&&<div style={{color:T.muted,fontSize:12,padding:16,textAlign:"center"}}>Keine Geräte</div>}
+              {libFiltered.map(eq=>(
+                <button key={eq.id} onClick={()=>addEquipment(eq)}
+                  style={{padding:"7px 9px",border:`1px solid ${T.border}`,background:"white",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",gap:8,fontFamily:"inherit",textAlign:"left",transition:"all .12s"}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=eq.color}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                  <div style={{width:30,height:30,borderRadius:8,background:eq.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>{eq.icon}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{eq.name}</div>
+                    <div style={{fontSize:10,color:T.muted,display:"flex",gap:6}}>
+                      <span>{fmt(eq.price)}</span>
+                      {eq.fallZone>0&&<span>⬡{eq.fallZone}m</span>}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>}
         </div>
-      )}
-      <div style={{display:"flex",gap:16}}>
-        <div style={{flex:1}}>
-          {view==="2d"&&(
-            <Card style={{padding:12,overflowAuto:"auto"}}>
-              <canvas ref={canvasRef} width={CW} height={CH}
-                style={{display:"block",cursor:drag?"grabbing":"default",borderRadius:8,maxWidth:"100%"}}
-                onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}/>
-              <div style={{marginTop:8,display:"flex",gap:16,fontSize:11,color:T.muted,flexWrap:"wrap"}}>
-                <span>🟡 Fallbereich (dynamisch)</span><span style={{color:T.red}}>🔴 Konflikt</span><span>🌳 Baum/Hindernis</span><span>Ziehen zum Verschieben</span>
+
+        {/* CENTER – Map / 3D */}
+        <div style={{flex:1,background:"white",border:`1px solid ${T.border}`,borderRadius:12,position:"relative",overflow:"hidden",boxShadow:T.shadow}}>
+          {view==="2d"?(<>
+            {/* Address search + map style switcher */}
+            <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6,flexWrap:"wrap"}}>
+              <div style={{display:"flex",background:"white",borderRadius:8,border:`1.5px solid ${T.border}`,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+                <input value={addrQuery} onChange={e=>setAddrQuery(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter")searchAddress();}}
+                  placeholder="📍 Adresse eingeben…"
+                  style={{padding:"7px 11px",border:"none",outline:"none",fontSize:12.5,fontFamily:"inherit",minWidth:200,background:"white"}}/>
+                <button onClick={searchAddress} style={{padding:"7px 11px",border:"none",background:T.green,color:"white",cursor:"pointer",fontSize:12,fontWeight:600}}>Finden</button>
               </div>
-            </Card>
-          )}
-          {view==="3d"&&(
-            <Card style={{padding:12}}>
-              <div ref={threeRef} style={{width:"100%",height:500,borderRadius:8,overflow:"hidden",background:"#87CEEB"}}/>
-              <div style={{marginTop:8,fontSize:11,color:T.muted}}>3D-Ansicht dreht sich automatisch · KI-generierte Geräteplatzierung</div>
-            </Card>
-          )}
-        </div>
-        <div style={{width:220}}>
-          <Card style={{padding:14}}>
-            <div className="syne" style={{fontWeight:700,marginBottom:12,fontSize:13}}>Platzierte Geräte ({placed.length})</div>
-            {placed.length===0?<div style={{fontSize:12,color:T.muted}}>Noch keine Geräte. Klicke «+ Gerät» oder nutze die KI-Platzierung.</div>:
-            placed.map(pl=>{const e=equipment.find(x=>x.id===pl.eqId);if(!e)return null;return(
-              <div key={pl.id} onClick={()=>setSelected(pl.id)} style={{padding:"8px 10px",borderRadius:8,marginBottom:6,cursor:"pointer",border:`1.5px solid ${selected===pl.id?T.gold:T.border}`,background:selected===pl.id?T.gold+"10":"transparent",display:"flex",alignItems:"center",gap:8}}>
-                <span style={{fontSize:18}}>{e.icon}</span>
-                <div><div style={{fontSize:11,fontWeight:600,lineHeight:1.2}}>{e.name}</div>
-                <div style={{fontSize:10,color:T.muted}}>{fmt(e.price)}</div></div>
-              </div>
-            );})}
-            <div style={{borderTop:`1px solid ${T.border}`,marginTop:10,paddingTop:10}}>
-              <div style={{fontSize:11,color:T.muted,marginBottom:4}}>Geräte Total</div>
-              <div className="syne" style={{fontWeight:800,fontSize:18,color:T.green}}>
-                {fmt(placed.reduce((s,pl)=>{const e=equipment.find(x=>x.id===pl.eqId);return s+(e?.price||0);},0))}
+              <div style={{display:"flex",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+                {[{v:"satellite",l:"🛰 Satellit"},{v:"hybrid",l:"🌍 Hybrid"},{v:"streets",l:"🗺 Karte"}].map(o=>(
+                  <button key={o.v} onClick={()=>setMapStyle(o.v)}
+                    style={{padding:"7px 10px",border:"none",background:mapStyle===o.v?T.green:"white",color:mapStyle===o.v?"white":T.text,cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}}>
+                    {o.l}
+                  </button>
+                ))}
               </div>
             </div>
-          </Card>
+
+            {/* Tool palette */}
+            <div style={{position:"absolute",left:10,top:60,zIndex:500,background:"white",padding:6,border:`1.5px solid ${T.border}`,borderRadius:10,display:"flex",flexDirection:"column",gap:4,boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+              <TB active={tool==="select"} onClick={()=>setTool("select")} title="Auswählen">✥</TB>
+              <TB active={tool==="tree"} onClick={()=>setTool("tree")} title="Baum hinzufügen (auf Karte klicken)">🌳</TB>
+              <TB active={tool==="building"} onClick={()=>setTool("building")} title="Gebäude hinzufügen (auf Karte klicken)">🏠</TB>
+              {selected&&<>
+                <div style={{height:1,background:T.border,margin:"2px 0"}}/>
+                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(-15)} title="Drehen links">↺</TB>}
+                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(15)} title="Drehen rechts">↻</TB>}
+                <TB onClick={deleteSelected} title="Löschen" danger>🗑</TB>
+              </>}
+            </div>
+
+            {/* Legend */}
+            <div style={{position:"absolute",bottom:30,left:10,zIndex:500,background:"white",padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:11,boxShadow:"0 2px 6px rgba(0,0,0,0.12)",display:"flex",flexDirection:"column",gap:4}}>
+              <div style={{fontWeight:700,color:T.muted,fontSize:10,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>Legende</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#F59E0B88",border:"1.5px dashed #F59E0B",borderRadius:2}}/>Fallraum EN 1176</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#DC262655",border:"1.5px dashed #DC2626",borderRadius:2}}/>Konflikt</div>
+            </div>
+
+            {/* Map canvas */}
+            <div ref={mapContainerRef} style={{width:"100%",height:"100%"}}/>
+          </>):(
+            <div ref={threeContainerRef} style={{width:"100%",height:"100%",background:"#87CEEB"}}/>
+          )}
+        </div>
+
+        {/* RIGHT – Properties panel */}
+        <div style={{width:270,background:"white",border:`1px solid ${T.border}`,borderRadius:12,display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:T.shadow}}>
+          <div style={{padding:"10px 12px",borderBottom:`1px solid ${T.border}`,fontWeight:700,fontSize:13}}>
+            {selected?(selected.type==="eq"?"⚙️ Gerät":"📌 Objekt"):"ℹ️ Projekt-Info"}
+          </div>
+          <div style={{flex:1,overflow:"auto",padding:12,display:"flex",flexDirection:"column",gap:10}}>
+            {!selected&&(
+              <>
+                <Stat label="Geräte platziert" val={placed.length}/>
+                <Stat label="Bäume & Gebäude" val={obstacles.length}/>
+                <Stat label="Konflikte" val={conflicts.length} color={conflicts.length>0?T.red:T.green}/>
+                <div style={{height:1,background:T.border,margin:"6px 0"}}/>
+                <div style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>Gesamtpreis</div>
+                <div className="syne" style={{fontSize:22,fontWeight:800,color:T.green}}>
+                  {fmt(placed.reduce((s,pl)=>{const e=equipment.find(x=>x.id===pl.eqId);return s+(e?.price||0);},0))}
+                </div>
+                <div style={{height:1,background:T.border,margin:"6px 0"}}/>
+                <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>
+                  💡 <b>Tipp:</b><br/>
+                  Klicken Sie auf ein Gerät in der Bibliothek, um es auf der Karte zu platzieren. Ziehen Sie Geräte und Hindernisse per Drag & Drop.
+                </div>
+              </>
+            )}
+            {selEqData&&(
+              <>
+                <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                  <div style={{width:42,height:42,borderRadius:10,background:selEqData.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{selEqData.icon}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:13,lineHeight:1.2}}>{selEqData.name}</div>
+                    {selEqData.artNr&&<div style={{fontSize:10,color:T.muted,fontFamily:"monospace",marginTop:2}}>{selEqData.artNr}</div>}
+                  </div>
+                </div>
+                <div style={{fontSize:12,color:T.muted,lineHeight:1.4}}>{selEqData.desc}</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:11}}>
+                  <Kv label="Kategorie" val={selEqData.cat}/>
+                  <Kv label="Material" val={selEqData.mat}/>
+                  <Kv label="Altersgruppe" val={selEqData.age}/>
+                  <Kv label="Fallzone" val={`${selEqData.fallZone} m`}/>
+                  <Kv label="Größe" val={`${selEqData.size[0]}×${selEqData.size[1]} m`}/>
+                  <Kv label="Rotation" val={`${selEq.rot||0}°`}/>
+                </div>
+                <div style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginTop:4}}>Preis</div>
+                <div className="syne" style={{fontSize:18,fontWeight:800,color:T.green}}>{fmt(selEqData.price)}</div>
+                <div style={{display:"flex",gap:6}}>
+                  <Btn style={{flex:1,fontSize:12}} onClick={()=>rotateSelected(-15)}>↺ 15°</Btn>
+                  <Btn style={{flex:1,fontSize:12}} onClick={()=>rotateSelected(15)}>15° ↻</Btn>
+                </div>
+                <Btn variant="ghost" onClick={deleteSelected} style={{color:T.red,borderColor:T.red+"66"}}>🗑 Entfernen</Btn>
+              </>
+            )}
+            {selOb&&(
+              <>
+                <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                  <div style={{width:42,height:42,borderRadius:10,background:selOb.type==="tree"?"#065F4622":"#37415122",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{selOb.type==="tree"?"🌳":"🏠"}</div>
+                  <div><div style={{fontWeight:700,fontSize:13}}>{selOb.label}</div><div style={{fontSize:11,color:T.muted}}>{selOb.type==="tree"?"Baum / Hindernis":"Gebäude"}</div></div>
+                </div>
+                <Input label="Bezeichnung" value={selOb.label} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,label:v}:x)}))}/>
+                {selOb.type==="tree"?
+                  <Input label="Kronendurchmesser (m)" type="number" value={(selOb.r||3)*2} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,r:Math.max(.5,Number(v)/2)}:x)}))}/>:
+                  <>
+                    <Input label="Breite (m)" type="number" value={selOb.w||6} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,w:Math.max(1,Number(v))}:x)}))}/>
+                    <Input label="Tiefe (m)" type="number" value={selOb.h||4} onChange={v=>updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===selOb.id?{...x,h:Math.max(1,Number(v))}:x)}))}/>
+                  </>}
+                <Btn variant="ghost" onClick={deleteSelected} style={{color:T.red,borderColor:T.red+"66"}}>🗑 Entfernen</Btn>
+              </>
+            )}
+          </div>
         </div>
       </div>
-      {palette&&(
-        <Modal title="Gerät hinzufügen" onClose={()=>setPalette(false)} width={700}>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,maxHeight:400,overflowY:"auto"}}>
-            {equipment.map(e=>(
-              <button key={e.id} onClick={()=>addEquipment(e)} style={{padding:14,border:`1.5px solid ${T.border}`,borderRadius:10,cursor:"pointer",background:"white",textAlign:"left",fontFamily:"inherit",transition:"all .15s"}}
-                onMouseEnter={ev=>ev.currentTarget.style.borderColor=T.green} onMouseLeave={ev=>ev.currentTarget.style.borderColor=T.border}>
-                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
-                  <span style={{fontSize:20}}>{e.icon}</span><span style={{fontWeight:700,fontSize:12}}>{e.name}</span>
-                </div>
-                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
-                  <Badge color={e.color}>{e.cat}</Badge>
-                  <Badge color={T.gold}>{e.mat}</Badge>
-                </div>
-                <div className="syne" style={{fontWeight:800,color:T.green,fontSize:14}}>{fmt(e.price)}</div>
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
+    </div>
+  );
+}
+
+function Stat({label,val,color}){
+  return (
+    <div style={{padding:"8px 10px",background:T.bg,borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <span style={{fontSize:12,color:T.muted}}>{label}</span>
+      <span className="syne" style={{fontWeight:800,color:color||T.text}}>{val}</span>
+    </div>
+  );
+}
+function Kv({label,val}){
+  return (
+    <div style={{padding:"5px 8px",background:T.bg,borderRadius:6}}>
+      <div style={{fontSize:9.5,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.3}}>{label}</div>
+      <div style={{fontWeight:600,fontSize:11.5,marginTop:1}}>{val}</div>
     </div>
   );
 }
