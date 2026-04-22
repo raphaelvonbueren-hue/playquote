@@ -1796,6 +1796,24 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         L.circle([ob.lat,ob.lng],{
           radius:ob.r||3, color:"#065F46", weight:1.5, fillColor:"#10B981", fillOpacity:.22,
         }).addTo(obLayer);
+      } else if(ob.type==="greenArea" && ob.polygon){
+        const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
+        // Grünfläche (Wald, Park) — grüne transparente Zone, zur Info
+        L.polygon(ob.polygon,{
+          color:isSel?"#D4A853":"#14532D", weight:isSel?2.5:1.5,
+          fillColor:"#22C55E", fillOpacity:.22, dashArray:"4 4",
+        }).addTo(obLayer).on("click",()=>setSelected({type:"ob",id:ob.id}));
+        const icon=L.divIcon({
+          className:"",
+          html:`<div style="
+            background:rgba(21,83,45,0.88);color:white;padding:2px 7px;border-radius:4px;
+            font-size:10.5px;font-weight:700;white-space:nowrap;
+            box-shadow:0 1px 4px rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.4);
+            transform:translate(-50%,-50%);
+          ">🌲 ${ob.label}</div>`,
+          iconSize:[0,0], iconAnchor:[0,0],
+        });
+        L.marker([ob.lat,ob.lng],{icon,interactive:false}).addTo(obLayer);
       } else if(ob.type==="buildingPoly"){
         const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
         // Gebäude-Polygon direkt aus OSM-Koordinaten
@@ -1934,12 +1952,19 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     try {
       const b=mapRef.current.getBounds();
       const south=b.getSouth(), west=b.getWest(), north=b.getNorth(), east=b.getEast();
-      // Overpass-QL: Gebäudeumrisse + Bäume im Bbox
-      const query=`[out:json][timeout:20];
+      // Erweiterte Overpass-QL Query:
+      // Gebäude + Einzelbäume + Baumreihen + Waldflächen + Parks
+      const query=`[out:json][timeout:25];
 (
   way["building"](${south},${west},${north},${east});
   relation["building"](${south},${west},${north},${east});
   node["natural"="tree"](${south},${west},${north},${east});
+  way["natural"="tree_row"](${south},${west},${north},${east});
+  way["natural"="wood"](${south},${west},${north},${east});
+  relation["natural"="wood"](${south},${west},${north},${east});
+  way["landuse"="forest"](${south},${west},${north},${east});
+  way["leisure"="park"](${south},${west},${north},${east});
+  relation["leisure"="park"](${south},${west},${north},${east});
 );
 out geom;`;
       const response=await fetch("https://overpass-api.de/api/interpreter",{
@@ -1950,57 +1975,123 @@ out geom;`;
       const data=await response.json();
 
       const newObstacles=[];
-      let nBuildings=0, nTrees=0;
+      let nBuildings=0, nTrees=0, nTreeRows=0, nGreen=0;
+
+      // Deterministisches "pseudo-random" für stabile Baumpositionen in Flächen
+      function hashCoord(lat,lng,salt){
+        let h=Math.sin((lat*1000+lng*1000+salt)*12.9898)*43758.5453;
+        return h-Math.floor(h);
+      }
+
       for(const el of (data.elements||[])){
-        if(el.type==="way" && el.tags?.building && el.geometry){
-          // Gebäude als Polygon — speichern als "buildingPoly" Obstacle
+        const tags=el.tags||{};
+
+        // ── Gebäude (way oder relation) ────────────────────────────
+        if(tags.building && el.geometry){
           const coords=el.geometry.map(g=>[g.lat,g.lon]);
-          // Center als Referenzpunkt
           const cLat=coords.reduce((s,c)=>s+c[0],0)/coords.length;
           const cLng=coords.reduce((s,c)=>s+c[1],0)/coords.length;
           newObstacles.push({
-            id:uid(),
-            type:"buildingPoly",
-            lat:cLat, lng:cLng,
-            polygon:coords, // array of [lat,lng]
-            label:el.tags?.name||el.tags?.addr_housename||"Gebäude",
-            source:"osm",
-            osmId:`way/${el.id}`,
+            id:uid(), type:"buildingPoly",
+            lat:cLat, lng:cLng, polygon:coords,
+            label:tags.name||tags["addr:housename"]||"Gebäude",
+            source:"osm", osmId:`${el.type}/${el.id}`,
           });
           nBuildings++;
-        } else if(el.type==="node" && el.tags?.natural==="tree"){
-          // Baumkrone geschätzt: aus tags.diameter_crown (wenn vorhanden) oder tags.height
+        }
+        // ── Einzelbaum ──────────────────────────────────────────────
+        else if(el.type==="node" && tags.natural==="tree"){
           let r=3;
-          if(el.tags?.diameter_crown) r=parseFloat(el.tags.diameter_crown)/2||3;
-          else if(el.tags?.height) r=Math.max(2,parseFloat(el.tags.height)/3);
+          if(tags.diameter_crown) r=parseFloat(tags.diameter_crown)/2||3;
+          else if(tags.height) r=Math.max(2,parseFloat(tags.height)/3);
           newObstacles.push({
-            id:uid(),
-            type:"tree",
-            lat:el.lat, lng:el.lon,
-            r:Math.max(1.5,Math.min(8,r)),
-            label:el.tags?.species||"Baum (OSM)",
-            source:"osm",
-            osmId:`node/${el.id}`,
+            id:uid(), type:"tree",
+            lat:el.lat, lng:el.lon, r:Math.max(1.5,Math.min(8,r)),
+            label:tags.species||tags.name||"Baum",
+            source:"osm", osmId:`node/${el.id}`,
           });
           nTrees++;
+        }
+        // ── Baumreihe → Einzelbäume entlang der Linie ──────────────
+        else if(el.type==="way" && tags.natural==="tree_row" && el.geometry){
+          // Entlang des Way verteilte Bäume (alle ~6m)
+          const pts=el.geometry;
+          for(let i=0;i<pts.length-1;i++){
+            const a=pts[i], b=pts[i+1];
+            const mPerLat=111320, mPerLng=111320*Math.cos(a.lat*Math.PI/180);
+            const dx=(b.lon-a.lon)*mPerLng, dy=(b.lat-a.lat)*mPerLat;
+            const segLen=Math.sqrt(dx*dx+dy*dy);
+            const nSeg=Math.max(1,Math.floor(segLen/6));
+            for(let k=0;k<nSeg;k++){
+              const t=k/nSeg;
+              newObstacles.push({
+                id:uid(), type:"tree",
+                lat:a.lat+(b.lat-a.lat)*t, lng:a.lon+(b.lon-a.lon)*t,
+                r:3, label:"Baum (Reihe)",
+                source:"osm", osmId:`way/${el.id}/${i}/${k}`,
+              });
+              nTrees++;
+            }
+          }
+          nTreeRows++;
+        }
+        // ── Wald / Park → Grünfläche mit Beispielbäumen ─────────────
+        else if(el.type==="way" && el.geometry &&
+          (tags.natural==="wood" || tags.landuse==="forest" || tags.leisure==="park")){
+          const coords=el.geometry.map(g=>[g.lat,g.lon]);
+          const cLat=coords.reduce((s,c)=>s+c[0],0)/coords.length;
+          const cLng=coords.reduce((s,c)=>s+c[1],0)/coords.length;
+          const label= tags.name || (tags.leisure==="park"?"Park":tags.landuse==="forest"?"Wald":"Gehölz");
+          newObstacles.push({
+            id:uid(), type:"greenArea",
+            lat:cLat, lng:cLng, polygon:coords, label,
+            source:"osm", osmId:`${el.type}/${el.id}`,
+          });
+          nGreen++;
+          // In Wald/Park: ~5 verstreute Bäume als Hindernis damit Kollision funktioniert
+          // Nur wenn wirklich Platz-relevant (bei Park, da Spielplatz oft IM Park ist)
+          if(tags.leisure==="park"){
+            // Bounding-Box grob
+            let minLat=Infinity,maxLat=-Infinity,minLng=Infinity,maxLng=-Infinity;
+            for(const c of coords){
+              if(c[0]<minLat) minLat=c[0]; if(c[0]>maxLat) maxLat=c[0];
+              if(c[1]<minLng) minLng=c[1]; if(c[1]>maxLng) maxLng=c[1];
+            }
+            // 4 Beispielbäume am Rand
+            for(let k=0;k<4;k++){
+              const tlat=minLat+hashCoord(cLat,cLng,k*3.7)*(maxLat-minLat);
+              const tlng=minLng+hashCoord(cLat,cLng,k*5.1+1)*(maxLng-minLng);
+              newObstacles.push({
+                id:uid(), type:"tree",
+                lat:tlat, lng:tlng, r:3.5,
+                label:`Baum (${label})`,
+                source:"osm", osmId:`${el.type}/${el.id}/est${k}`,
+              });
+              nTrees++;
+            }
+          }
         }
       }
 
       if(newObstacles.length===0){
-        setOsmStatus({type:"error",msg:"Keine Gebäude oder Bäume im Kartenausschnitt in OpenStreetMap gefunden"});
-        setTimeout(()=>setOsmStatus(null),4000);
+        setOsmStatus({type:"error",msg:"Keine Gebäude/Bäume/Grünflächen in OSM an dieser Position gefunden. Zoom ggf. raus für mehr Kontext."});
+        setTimeout(()=>setOsmStatus(null),5000);
         return;
       }
 
-      // Merge in bestehende Hindernisse, aber OSM-Duplikate vermeiden
+      // Merge in bestehende Hindernisse, OSM-Duplikate vermeiden
       updateProject(p=>{
         const existing=p.obstacles||[];
         const existingOsmIds=new Set(existing.filter(o=>o.source==="osm").map(o=>o.osmId));
         const toAdd=newObstacles.filter(o=>!existingOsmIds.has(o.osmId));
         return { ...p, obstacles:[...existing, ...toAdd] };
       });
-      setOsmStatus({type:"info",msg:`✓ ${nBuildings} Gebäude + ${nTrees} Bäume aus OpenStreetMap erkannt`});
-      setTimeout(()=>setOsmStatus(null),4000);
+      const parts=[];
+      if(nBuildings) parts.push(`${nBuildings} Gebäude`);
+      if(nTrees) parts.push(`${nTrees} Bäume${nTreeRows?` (+${nTreeRows} Reihe${nTreeRows>1?"n":""})`:""}`);
+      if(nGreen) parts.push(`${nGreen} Grünfläche${nGreen>1?"n":""}`);
+      setOsmStatus({type:"info",msg:`✓ Aus OSM erkannt: ${parts.join(" · ")}`});
+      setTimeout(()=>setOsmStatus(null),5000);
     } catch(e){
       console.warn("Overpass failed",e);
       setOsmStatus({type:"error",msg:`Overpass-API Fehler: ${e.message}`});
@@ -2536,6 +2627,23 @@ out geom;`;
         bgroup.position.set(lx,0,-lz);
         bgroup.rotation.y=(ob.rot||0)*Math.PI/180;
         worldGroup.add(bgroup);
+      } else if(ob.type==="greenArea" && ob.polygon){
+        // Grünfläche als flache Bodenmatte (leicht erhöht, keine Höhe)
+        try {
+          const shape=new THREE.Shape();
+          ob.polygon.forEach(([plat,plng],i)=>{
+            const [px,pz]=toLocal(plat,plng);
+            if(i===0) shape.moveTo(px,-pz);
+            else shape.lineTo(px,-pz);
+          });
+          const geo=new THREE.ShapeGeometry(shape);
+          geo.rotateX(-Math.PI/2);
+          const mesh=new THREE.Mesh(geo,
+            new THREE.MeshStandardMaterial({color:"#3F8C3F",roughness:.9,metalness:0,transparent:true,opacity:.55}));
+          mesh.position.y=0.01;
+          mesh.receiveShadow=true;
+          worldGroup.add(mesh);
+        } catch(e){ console.warn("greenArea 3D failed",e); }
       } else if(ob.type==="buildingPoly" && ob.polygon){
         // OSM-Gebäude: echten Umriss extrudieren
         const bh=3.2; // Standardhöhe 3.2m
@@ -2802,6 +2910,8 @@ out geom;`;
               <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:fpColor,border:"1px solid rgba(0,0,0,.3)",borderRadius:2}}/>Fallschutz-Belag · {fpMerged?"zusammenhängend":"einzeln"}</div>
               <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#F59E0B66",border:"1.5px dashed #F59E0B",borderRadius:2}}/>Fallraum (EN 1176)</div>
               <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#DC262644",border:"1.5px dashed #DC2626",borderRadius:2}}/>Konflikt</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#EF444455",border:"1px dashed #B91C1C",borderRadius:2}}/>Gebäude (OSM)</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#22C55E44",border:"1px dashed #14532D",borderRadius:2}}/>Wald/Park (OSM)</div>
             </div>
 
             {/* Map canvas */}
