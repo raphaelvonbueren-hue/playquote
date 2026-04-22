@@ -1650,6 +1650,26 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     const wood=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.02,roughness:.82});
     const rubber=(col)=>new THREE.MeshStandardMaterial({color:col,metalness:.1,roughness:.85});
 
+    // KOMPAN-Markenfarben & Materialien basierend auf Artikel-Nr-Präfix (tatsächliche Produktlinien)
+    function getKompanColors(eq){
+      const art=(eq.artNr||"").toUpperCase();
+      const defaults={post:"#6B7B8C",accent:eq.color||"#3B82F6",plat:"#C69A5A",seat:"#1F2937",brand:"KOMPAN"};
+      if(art.startsWith("KSW")||art.startsWith("SW")) return {post:"#A8AEB4",accent:"#C8102E",plat:"#C69A5A",seat:"#1F2937",brand:"KOMPAN Schaukeln"}; // verzinkter Stahl + rot-schwarz
+      if(art.startsWith("GXY")) return {post:"#A8AEB4",accent:"#1E2A3B",plat:"#A8AEB4",seat:"#1F2937",brand:"GALAXY"}; // Edelstahl + Anthrazit
+      if(art.startsWith("COR")||art.startsWith("CRP")) return {post:"#1F1F1F",accent:"#D62828",plat:"#1F1F1F",seat:"#D62828",brand:"COROCORD"}; // schwarz + rot (Seilspiel)
+      if(art.startsWith("NRO")) return {post:"#A97851",accent:"#6B4226",plat:"#A97851",seat:"#4A2E1A",brand:"NATURA Robinia"}; // Robinia-Holz
+      if(art.startsWith("MSC")||art.startsWith("MSV")) return {post:"#F4A82C",accent:"#E8732C",plat:"#F4A82C",seat:"#5A2B82",brand:"MOMENTS"}; // bunt: orange/lila
+      if(art.startsWith("PCM")) return {post:"#2C7873",accent:"#F39C12",plat:"#A97851",seat:"#2C7873",brand:"PCM"}; // grün-orange
+      if(art.startsWith("KPL")||art.startsWith("KPB")) return {post:"#A8AEB4",accent:"#008DC7",plat:"#8B6A47",seat:"#008DC7",brand:"ELEPHANT"}; // blau-holz
+      if(art.startsWith("ELE")) return {post:"#A8AEB4",accent:"#D4A853",plat:"#E8CFA0",seat:"#1F2937",brand:"ELEMENTS"}; // natur-gold
+      if(art.startsWith("KSL")) return {post:"#A8AEB4",accent:"#C8102E",plat:"#C69A5A",seat:"#1F2937",brand:"KSL Rutsche"}; // rot-Stahl
+      if(art.startsWith("JUM")) return {post:"#1F1F1F",accent:"#1F1F1F",plat:"#1F1F1F",seat:"#2A2A2A",brand:"JUMPER"}; // ganz schwarz (Membran)
+      if(art.startsWith("TPP")) return {post:"#A97851",accent:"#D4A853",plat:"#A97851",seat:"#2C7873",brand:"TODDLER"}; // Holz + Akzent
+      if(art.startsWith("KCW")) return {post:"#A8AEB4",accent:"#1E2A3B",plat:"#A8AEB4",seat:"#2A2A2A",brand:"SEILBAHN"}; // Stahl
+      if(art.startsWith("M")) return {post:"#A8AEB4",accent:eq.color||"#3B82F6",plat:"#C69A5A",seat:"#1F2937",brand:"MOMENTS"}; // classic
+      return defaults;
+    }
+
     /* Fallschutz-Bodenflächen (EN 1177) - unter jedem Gerät mit fallZone > 0.6m */
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
@@ -1674,12 +1694,13 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       const [w,d]=eq.size||[2,2];
       const height=parseHeight(eq);
       const col=eq.color||"#3B82F6";
+      const K=getKompanColors(eq); // KOMPAN-Farbschema für diese Produktlinie
 
       if(eq.cat==="Schaukeln"){
         const frameH=Math.max(height,2.0);
-        const frameMat=metalPost("#6B7B8C");
+        const frameMat=metalPost(K.post);
         const chainMat=metalPost("#4B5563");
-        const seatMat=rubber("#1F2937");
+        const seatMat=rubber(K.seat);
         const legLen=Math.sqrt(frameH*frameH+0.8*0.8);
         const legAngle=Math.atan2(0.8,frameH);
         [[-w/2, d/2-.2],[ w/2, d/2-.2],[-w/2,-d/2+.2],[ w/2,-d/2+.2]].forEach(([x,z])=>{
@@ -1689,7 +1710,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           leg.rotation.x=-Math.sign(z)*legAngle*0.4;
           leg.castShadow=true; g.add(leg);
         });
-        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w*.9,10),frameMat);
+        const bar=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,w*.9,10),metalPost(K.accent));
         bar.rotation.z=Math.PI/2; bar.position.y=frameH; bar.castShadow=true; g.add(bar);
         const isNest=/nest/i.test(eq.name||"");
         const nSeats=isNest?1:(w>3.5?2:1);
@@ -1718,14 +1739,12 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         }
       }
       else if(eq.cat==="Rutschen"){
-        // KOMPAN Slides typically: elevated platform with ladder/steps on one side,
-        // curved/straight slide bed with raised side rails, exit runout at bottom
         const platH=Math.max(height,1.2);
         const slideLen=Math.max(d,platH*2.2);
-        const slideColor=plastic(col);
-        const postMat=metalPost("#6B7B8C");
-        const woodPlat=wood("#C69A5A");
-        const railsMat=plastic("#FACC15");
+        const postMat=metalPost(K.post);
+        const woodPlat=wood(K.plat);
+        const railsMat=plastic(K.accent);
+        const slideMat=new THREE.MeshStandardMaterial({color:K.accent,metalness:.35,roughness:.35,side:THREE.DoubleSide});
         // Platform (top)
         const plat=new THREE.Mesh(new THREE.BoxGeometry(1.2,.1,1.1),woodPlat);
         plat.position.set(-slideLen/2+0.6,platH,0);
@@ -1744,12 +1763,8 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         // Back rail
         const back=new THREE.Mesh(new THREE.BoxGeometry(.05,0.8,1.1),railsMat);
         back.position.set(-slideLen/2,platH+.4,0); g.add(back);
-        // Slide bed: shaped path (curve via segmented boxes for realistic look)
-        const bedSegs=12;
-        const slideMat=new THREE.MeshStandardMaterial({color:col,metalness:.35,roughness:.35,side:THREE.DoubleSide});
-        // Create a curved slide using Shape + ExtrudeGeometry
+        // Slide bed
         const bedW=0.65;
-        // Straight inclined slide (simpler, reliable)
         const slideAngle=Math.atan2(platH-0.1,slideLen-0.6);
         const bedLen=Math.sqrt((slideLen-0.6)*(slideLen-0.6)+(platH-0.1)*(platH-0.1));
         const bed=new THREE.Mesh(new THREE.BoxGeometry(bedLen,.06,bedW),slideMat);
@@ -1783,9 +1798,9 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       else if(eq.cat==="Karussell"){
         const r=Math.max(w,d)/2;
         const discH=0.18;
-        const disc=new THREE.Mesh(new THREE.CylinderGeometry(r,r,discH,32),plastic(col));
+        const disc=new THREE.Mesh(new THREE.CylinderGeometry(r,r,discH,32),plastic(K.accent));
         disc.position.y=discH/2; disc.castShadow=true; disc.receiveShadow=true; g.add(disc);
-        const rim=new THREE.Mesh(new THREE.TorusGeometry(r,.04,8,32),metalPost("#9CA3AF"));
+        const rim=new THREE.Mesh(new THREE.TorusGeometry(r,.04,8,32),metalPost(K.post));
         rim.rotation.x=Math.PI/2; rim.position.y=discH; g.add(rim);
         const pole=new THREE.Mesh(new THREE.CylinderGeometry(.08,.1,1.0,10),metalPost("#6B7B8C"));
         pole.position.y=discH+0.5; g.add(pole);
@@ -1793,7 +1808,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           const a=(i/4)*Math.PI*2;
           const h=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,1,6),metalPost("#6B7B8C"));
           h.position.set(Math.cos(a)*r*0.8,discH+0.5,Math.sin(a)*r*0.8); g.add(h);
-          const top=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,r*0.4,6),metalPost("#6B7B8C"));
+          const top=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,r*0.4,6),metalPost(K.post));
           top.rotation.z=Math.PI/2; top.rotation.y=-a;
           top.position.set(Math.cos(a)*r*0.6,discH+1.0,Math.sin(a)*r*0.6);
           g.add(top);
@@ -1801,19 +1816,19 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       }
       else if(eq.cat==="Wipptiere"){
         const seatH=0.55;
-        const pivot=new THREE.Mesh(new THREE.CylinderGeometry(.12,.15,.2,12),metalPost("#6B7B8C"));
+        const pivot=new THREE.Mesh(new THREE.CylinderGeometry(.12,.15,.2,12),metalPost(K.post));
         pivot.position.y=0.1; g.add(pivot);
         const spring=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.35,8),metalPost("#4B5563"));
         spring.position.y=0.375; g.add(spring);
-        const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.6,8,12),plastic(col));
+        const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.28,0.6,8,12),plastic(K.accent));
         body.rotation.z=Math.PI/2;
         body.position.y=seatH+.1; body.castShadow=true; g.add(body);
       }
       else if(eq.cat==="Spielhäuser"){
         const baseH=Math.max(height*0.7,1.8);
-        const base=new THREE.Mesh(new THREE.BoxGeometry(w,baseH,d),wood("#C69A5A"));
+        const base=new THREE.Mesh(new THREE.BoxGeometry(w,baseH,d),wood(K.plat));
         base.position.y=baseH/2; base.castShadow=true; base.receiveShadow=true; g.add(base);
-        const win=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.06),plastic("#3B82F6"));
+        const win=new THREE.Mesh(new THREE.BoxGeometry(.5,.4,.06),plastic(K.accent));
         win.position.set(0,baseH*0.65,d/2+0.02); g.add(win);
         const roofH=baseH*0.55;
         const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.72,roofH,4),wood("#8B4513"));
@@ -1821,8 +1836,8 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       }
       else if(eq.cat==="Klettern"){
         const frameH=Math.max(height,2.2);
-        const postMat=metalPost("#6B7B8C");
-        const ropeMat=rubber("#1F2937");
+        const postMat=metalPost(K.post);
+        const ropeMat=rubber(K.accent);
         [[-w/2,-d/2],[w/2,-d/2],[-w/2,d/2],[w/2,d/2]].forEach(([x,z])=>{
           const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,frameH,8),postMat);
           p.position.set(x,frameH/2,z); p.castShadow=true; g.add(p);
@@ -1844,7 +1859,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       }
       else if(eq.cat==="Sandspiel"){
         const edgeH=0.35;
-        const edgeMat=wood("#A8763E");
+        const edgeMat=wood(K.plat);
         [[0,-d/2,w,0.1],[0,d/2,w,0.1],[-w/2,0,0.1,d],[w/2,0,0.1,d]].forEach(([x,z,bw,bd])=>{
           const e=new THREE.Mesh(new THREE.BoxGeometry(bw,edgeH,bd),edgeMat);
           e.position.set(x,edgeH/2,z); e.castShadow=true; e.receiveShadow=true; g.add(e);
@@ -1855,16 +1870,16 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       }
       else if(eq.cat==="Balancieren"){
         const beamLen=Math.max(w,d);
-        const beamMat=wood("#A8763E");
+        const beamMat=wood(K.plat);
         const beam=new THREE.Mesh(new THREE.BoxGeometry(beamLen,.14,.16),beamMat);
         beam.position.y=0.45; beam.castShadow=true; g.add(beam);
         [[-beamLen/2+0.1,0],[beamLen/2-0.1,0]].forEach(([x,z])=>{
-          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,0.45,8),metalPost("#6B7B8C"));
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(.07,.07,0.45,8),metalPost(K.post));
           p.position.set(x,0.225,z); p.castShadow=true; g.add(p);
         });
       }
       else {
-        const b=new THREE.Mesh(new THREE.BoxGeometry(w,height,d),plastic(col));
+        const b=new THREE.Mesh(new THREE.BoxGeometry(w,height,d),plastic(K.accent));
         b.position.y=height/2; b.castShadow=true; g.add(b);
       }
 
