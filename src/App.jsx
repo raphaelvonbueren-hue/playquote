@@ -910,11 +910,17 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
   const mapContainerRef=useRef(null);
   const mapRef=useRef(null);
-  const layersRef=useRef({ equipment:null, fallZones:null, obstacles:null, area:null });
+  const layersRef=useRef({ equipment:null, fallZones:null, obstacles:null, area:null, measure:null });
   const threeContainerRef=useRef(null);
   const threeRef=useRef(null);
   const animRef=useRef(null);
   const targetRef=useRef(new THREE.Vector3(0,1.5,0));
+  // Refs to avoid stale closures in Leaflet event handlers
+  const toolRef=useRef("select");
+  const pendingEqRef=useRef(null); // equipment id to place on next map click
+  const measureRef=useRef({first:null, layer:null});
+  const [pendingEq,setPendingEq]=useState(null);
+  const [measureInfo,setMeasureInfo]=useState(null);
 
   const placed=project.placed||[];
   const obstacles=project.obstacles||[];
@@ -981,14 +987,50 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     layersRef.current.obstacles=L.layerGroup().addTo(map);
     layersRef.current.area=L.layerGroup().addTo(map);
 
-    // Click handler for tools
+    // Click handler for tools — reads from refs for fresh values
     map.on("click",(e)=>{
-      if(tool==="tree"){
+      const t=toolRef.current;
+      const pending=pendingEqRef.current;
+      if(pending){
+        // Place the pending equipment here
+        const id=uid();
+        updateProject(p=>({...p,placed:[...(p.placed||[]),{id,eqId:pending.id,lat:e.latlng.lat,lng:e.latlng.lng,rot:0}]}));
+        pendingEqRef.current=null;
+        setPendingEq(null);
+        setSelected({type:"eq",id});
+      } else if(t==="tree"){
         const id=uid();
         updateProject(p=>({...p,obstacles:[...(p.obstacles||[]),{id,type:"tree",lat:e.latlng.lat,lng:e.latlng.lng,r:3,label:"Baum"}]}));
-      } else if(tool==="building"){
+      } else if(t==="building"){
         const id=uid();
         updateProject(p=>({...p,obstacles:[...(p.obstacles||[]),{id,type:"building",lat:e.latlng.lat,lng:e.latlng.lng,w:6,h:4,label:"Gebäude"}]}));
+      } else if(t==="measure"){
+        const m=measureRef.current;
+        if(!m.first){
+          // first point
+          m.first=e.latlng;
+          if(m.layer){ m.layer.clearLayers(); } else { m.layer=L.layerGroup().addTo(map); }
+          L.circleMarker(m.first,{radius:5,color:"#D4A853",fillColor:"#D4A853",fillOpacity:1,weight:2}).addTo(m.layer);
+        } else {
+          // second point — show distance
+          const a=m.first, b=e.latlng;
+          const R=6371000;
+          const toRad=(d)=>d*Math.PI/180;
+          const dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+          const aa=Math.sin(dLat/2)**2+Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+          const dist=2*R*Math.atan2(Math.sqrt(aa),Math.sqrt(1-aa));
+          L.polyline([a,b],{color:"#D4A853",weight:3,dashArray:"6 6"}).addTo(m.layer);
+          L.circleMarker(b,{radius:5,color:"#D4A853",fillColor:"#D4A853",fillOpacity:1,weight:2}).addTo(m.layer);
+          const midLat=(a.lat+b.lat)/2, midLng=(a.lng+b.lng)/2;
+          const label=dist<1?`${(dist*100).toFixed(0)} cm`:dist<1000?`${dist.toFixed(2)} m`:`${(dist/1000).toFixed(2)} km`;
+          L.marker([midLat,midLng],{icon:L.divIcon({
+            className:"",
+            html:`<div style="background:#D4A853;color:white;padding:3px 9px;border-radius:4px;font-weight:700;font-size:12px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.3);">📏 ${label}</div>`,
+            iconSize:[0,0], iconAnchor:[0,0],
+          })}).addTo(m.layer);
+          setMeasureInfo({distance:dist,label,a,b});
+          m.first=null;
+        }
       } else {
         setSelected(null);
       }
@@ -1154,30 +1196,46 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     });
   },[placed,obstacles,selected,conflicts,equipment,view]);
 
-  // Cursor feedback
+  // Cursor feedback + sync toolRef
+  useEffect(()=>{
+    toolRef.current=tool;
+    if(!mapContainerRef.current) return;
+    const cur={ select:"grab", tree:"copy", building:"copy", measure:"crosshair", place:"copy" }[tool]||"grab";
+    mapContainerRef.current.style.cursor=cur;
+    // When leaving measure tool, clear any half-drawn measurement
+    if(tool!=="measure"&&measureRef.current.layer){
+      measureRef.current.layer.clearLayers();
+      measureRef.current.first=null;
+      setMeasureInfo(null);
+    }
+  },[tool]);
+
+  // Sync pendingEq ref whenever state changes
+  useEffect(()=>{ pendingEqRef.current=pendingEq; },[pendingEq]);
+  // Show crosshair cursor when ready to place equipment
   useEffect(()=>{
     if(!mapContainerRef.current) return;
-    const cur={ select:"grab", tree:"copy", building:"copy", measure:"crosshair" }[tool]||"grab";
-    mapContainerRef.current.style.cursor=cur;
-  },[tool]);
+    if(pendingEq) mapContainerRef.current.style.cursor="copy";
+  },[pendingEq]);
 
   /* ────── ACTIONS ────── */
   function addEquipment(eq){
     if(!mapRef.current) return;
-    const c=mapRef.current.getCenter();
-    const id=uid();
-    updateProject(p=>({...p,placed:[...(p.placed||[]),{id,eqId:eq.id,lat:c.lat,lng:c.lng,rot:0}]}));
-    setSelected({type:"eq",id});
+    // Arm for placement on next map click (visual cursor change)
+    setPendingEq(eq);
+    setTool("place");
+    toolRef.current="place";
+  }
+  function rotateSelected(deg){
+    if(!selected||selected.type!=="eq") return;
+    const step=((deg%360)+360)%360;
+    updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selected.id?{...x,rot:((x.rot||0)+deg+360)%360}:x)}));
   }
   function deleteSelected(){
     if(!selected) return;
     if(selected.type==="eq") updateProject(p=>({...p,placed:p.placed.filter(x=>x.id!==selected.id)}));
     else updateProject(p=>({...p,obstacles:p.obstacles.filter(x=>x.id!==selected.id)}));
     setSelected(null);
-  }
-  function rotateSelected(deg){
-    if(!selected||selected.type!=="eq") return;
-    updateProject(p=>({...p,placed:p.placed.map(x=>x.id===selected.id?{...x,rot:((x.rot||0)+deg)%360}:x)}));
   }
   function autoPlace(){
     if(!mapRef.current) return;
@@ -1210,9 +1268,14 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   // ── Keyboard shortcuts ──
   useEffect(()=>{
     const h=(e)=>{
-      // Skip when typing in input/textarea
       const t=e.target.tagName;
       if(t==="INPUT"||t==="TEXTAREA"||t==="SELECT") return;
+      if(e.key==="Escape"){
+        setSelected(null);
+        setPendingEq(null);
+        setTool("select");
+        return;
+      }
       if(!selected) return;
       if(e.key==="r"||e.key==="R"){
         e.preventDefault();
@@ -1224,8 +1287,6 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         e.preventDefault();
         if(selected.type==="eq") updateProject(p=>({...p,placed:p.placed.filter(x=>x.id!==selected.id)}));
         else updateProject(p=>({...p,obstacles:p.obstacles.filter(x=>x.id!==selected.id)}));
-        setSelected(null);
-      } else if(e.key==="Escape"){
         setSelected(null);
       }
     };
@@ -1772,11 +1833,13 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
             </div>
             <div style={{flex:1,overflow:"auto",padding:"8px 10px",display:"flex",flexDirection:"column",gap:5}}>
               {libFiltered.length===0&&<div style={{color:T.muted,fontSize:12,padding:16,textAlign:"center"}}>Keine Geräte</div>}
-              {libFiltered.map(eq=>(
+              {libFiltered.map(eq=>{
+                const isPending=pendingEq&&pendingEq.id===eq.id;
+                return (
                 <button key={eq.id} onClick={()=>addEquipment(eq)}
-                  style={{padding:"7px 9px",border:`1px solid ${T.border}`,background:"white",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",gap:8,fontFamily:"inherit",textAlign:"left",transition:"all .12s"}}
-                  onMouseEnter={e=>e.currentTarget.style.borderColor=eq.color}
-                  onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                  style={{padding:"7px 9px",border:`1.5px solid ${isPending?T.green:T.border}`,background:isPending?T.green+"10":"white",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center",gap:8,fontFamily:"inherit",textAlign:"left",transition:"all .12s"}}
+                  onMouseEnter={e=>{if(!isPending) e.currentTarget.style.borderColor=eq.color;}}
+                  onMouseLeave={e=>{if(!isPending) e.currentTarget.style.borderColor=T.border;}}>
                   <div style={{width:30,height:30,borderRadius:8,background:eq.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>{eq.icon}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:11.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{eq.name}</div>
@@ -1785,8 +1848,10 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                       {eq.fallZone>0&&<span>⬡{eq.fallZone}m</span>}
                     </div>
                   </div>
+                  {isPending&&<span style={{fontSize:10,color:T.green,fontWeight:700}}>●</span>}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </>}
         </div>
@@ -1815,16 +1880,33 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
             {/* Tool palette */}
             <div style={{position:"absolute",left:10,top:60,zIndex:500,background:"white",padding:6,border:`1.5px solid ${T.border}`,borderRadius:10,display:"flex",flexDirection:"column",gap:4,boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
-              <TB active={tool==="select"} onClick={()=>setTool("select")} title="Auswählen">✥</TB>
-              <TB active={tool==="tree"} onClick={()=>setTool("tree")} title="Baum hinzufügen (auf Karte klicken)">🌳</TB>
-              <TB active={tool==="building"} onClick={()=>setTool("building")} title="Gebäude hinzufügen (auf Karte klicken)">🏠</TB>
+              <TB active={tool==="select"} onClick={()=>{setTool("select");setPendingEq(null);}} title="Auswählen / verschieben">✥</TB>
+              <TB active={tool==="tree"} onClick={()=>{setTool("tree");setPendingEq(null);}} title="Baum hinzufügen (klicken auf Karte)">🌳</TB>
+              <TB active={tool==="building"} onClick={()=>{setTool("building");setPendingEq(null);}} title="Gebäude hinzufügen (klicken auf Karte)">🏠</TB>
+              <TB active={tool==="measure"} onClick={()=>{setTool("measure");setPendingEq(null);}} title="Distanz messen (2 Punkte anklicken)">📏</TB>
               {selected&&<>
                 <div style={{height:1,background:T.border,margin:"2px 0"}}/>
-                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(-15)} title="Drehen links">↺</TB>}
-                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(15)} title="Drehen rechts">↻</TB>}
-                <TB onClick={deleteSelected} title="Löschen" danger>🗑</TB>
+                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(-15)} title="Drehen links 15°">↺</TB>}
+                {selected.type==="eq"&&<TB onClick={()=>rotateSelected(15)} title="Drehen rechts 15°">↻</TB>}
+                <TB onClick={deleteSelected} title="Löschen (Entf)" danger>🗑</TB>
               </>}
             </div>
+
+            {/* Placement-mode banner */}
+            {pendingEq&&(
+              <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:600,background:T.green,color:"white",padding:"8px 16px",borderRadius:8,boxShadow:"0 3px 12px rgba(0,0,0,0.25)",display:"flex",alignItems:"center",gap:10,fontSize:13,fontWeight:600}}>
+                <span style={{fontSize:18}}>{pendingEq.icon}</span>
+                <span>Klicke auf die Karte, um <b>{pendingEq.name}</b> zu platzieren</span>
+                <button onClick={()=>{setPendingEq(null);setTool("select");}} style={{background:"rgba(255,255,255,.2)",border:"none",color:"white",cursor:"pointer",padding:"3px 9px",borderRadius:4,fontFamily:"inherit",fontSize:12}}>Abbrechen (Esc)</button>
+              </div>
+            )}
+
+            {/* Measure tool banner */}
+            {tool==="measure"&&!measureInfo&&(
+              <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:600,background:T.gold,color:"white",padding:"8px 16px",borderRadius:8,boxShadow:"0 3px 12px rgba(0,0,0,0.25)",fontSize:13,fontWeight:600}}>
+                📏 Klicke 2 Punkte auf die Karte, um die Distanz zu messen
+              </div>
+            )}
 
             {/* Legend */}
             <div style={{position:"absolute",bottom:30,left:10,zIndex:500,background:"white",padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:11,boxShadow:"0 2px 6px rgba(0,0,0,0.12)",display:"flex",flexDirection:"column",gap:4}}>
