@@ -1169,38 +1169,60 @@ function RenderStudio({ sourceScene, sourceCamera, onClose }) {
         ground.rotation.x = -Math.PI / 2;
         scene.add(ground);
 
-        // Nur unterstützte Meshes aus der Quellszene übertragen
+        // Nur unterstützte Meshes aus der Quellszene übertragen — ULTRA-DEFENSIV
+        // Der Path-Tracer crasht bei unsauberer Geometrie (unindexed/indexed Mix,
+        // fehlenden Attributen, transparenten Materials). Wir bauen daher jede Geometrie
+        // komplett neu auf: non-indexed BufferGeometry mit position + normal.
         let meshCount = 0;
+        const sceneMeshes = [];
         sourceScene.traverse((obj) => {
-          if (!obj.isMesh) return; // Skip Lines, GridHelper, Points, Lights, Groups etc.
-          if (!obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) return;
-          const srcMat = obj.material;
-          if (!srcMat) return;
-          const mat0 = Array.isArray(srcMat) ? srcMat[0] : srcMat;
-          // Fall protection is drawn as Ground, skip big ground/grid meshes from source
+          if (!obj.isMesh) return;
           if (obj === ground) return;
-          // Skip any mesh that's just ring/outline or transparent (would break path tracer)
-          if (mat0.isMeshBasicMaterial) return;
-
-          // Deep copy the mesh with world transform baked in
-          obj.updateMatrixWorld();
-          const geom = obj.geometry.clone();
-          let newMat;
-          if (mat0.isMeshStandardMaterial || mat0.isMeshPhysicalMaterial) {
-            newMat = mat0.clone();
-          } else {
-            // Convert unknown materials to Standard for safety
-            newMat = new THREE.MeshStandardMaterial({
-              color: mat0.color || 0x888888,
-              roughness: 0.7,
-              metalness: 0,
-            });
-          }
-          const clone = new THREE.Mesh(geom, newMat);
-          clone.applyMatrix4(obj.matrixWorld);
-          scene.add(clone);
-          meshCount++;
+          sceneMeshes.push(obj);
         });
+
+        for (const obj of sceneMeshes) {
+          try {
+            if (!obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) continue;
+            if (obj.geometry.attributes.position.count === 0) continue;
+
+            const srcMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+            if (!srcMat) continue;
+            if (srcMat.isMeshBasicMaterial) continue;  // Path tracer braucht PBR
+            // Skip transparente Hilfsebenen (Halo, Auswahlringe)
+            if (srcMat.transparent === true && (srcMat.opacity ?? 1) < 0.99) continue;
+
+            obj.updateMatrixWorld();
+
+            // Geometrie komplett neu aufbauen, um Probleme mit Indexing/Attributes zu vermeiden
+            let geom = obj.geometry.clone();
+            // De-index (non-indexed ist robuster für BVH)
+            if (geom.index !== null) {
+              geom = geom.toNonIndexed();
+            }
+            // Entferne ALLE extra Attributes ausser position — das vermeidet Array-Längen-Mismatches
+            const pos = geom.attributes.position;
+            const cleanGeom = new THREE.BufferGeometry();
+            cleanGeom.setAttribute("position", new THREE.BufferAttribute(pos.array.slice(), 3));
+            // Normale neu berechnen (viele Geometrien haben fehlerhafte Normale nach clone/toNonIndexed)
+            cleanGeom.computeVertexNormals();
+
+            // Sicheres Standard-Material
+            const color = (srcMat.color && srcMat.color.isColor) ? srcMat.color.clone() : new THREE.Color(0x888888);
+            const newMat = new THREE.MeshStandardMaterial({
+              color,
+              roughness: typeof srcMat.roughness === "number" ? srcMat.roughness : 0.7,
+              metalness: typeof srcMat.metalness === "number" ? srcMat.metalness : 0,
+            });
+
+            const clone = new THREE.Mesh(cleanGeom, newMat);
+            clone.applyMatrix4(obj.matrixWorld);
+            scene.add(clone);
+            meshCount++;
+          } catch (meshErr) {
+            console.warn("Skip mesh for path tracer:", meshErr.message);
+          }
+        }
 
         if (meshCount === 0) {
           throw new Error("Keine renderfähigen 3D-Objekte in der Szene gefunden. Bitte erst Geräte im Planer platzieren und die 3D-Ansicht öffnen, bevor Sie das Render-Studio starten.");
@@ -1211,23 +1233,31 @@ function RenderStudio({ sourceScene, sourceCamera, onClose }) {
         camera.aspect = W / H;
         camera.updateProjectionMatrix();
 
-        // Initialize path tracer
+        // Initialize path tracer — minimal, robuste Optionen (vermeidet API-Inkompatibilitäten)
         pathTracer = new WebGLPathTracer(renderer);
         pathTracer.renderScale = 1;
-        pathTracer.tiles.set(2, 2); // tile rendering to avoid GPU timeouts
-        pathTracer.bounces = 4;
-        pathTracer.filterGlossyFactor = 0.5;
+        pathTracer.bounces = 3;
         pathTracerRef.current = pathTracer;
 
-        // Try to use async BVH worker (faster/non-blocking). Fall back to sync.
+        // BVH-Worker optional — bei Fehler auf synchrones setScene zurückfallen
         try {
           const { ParallelMeshBVHWorker } = await import("three-mesh-bvh/src/workers/ParallelMeshBVHWorker.js");
-          pathTracer.setBVHWorker(new ParallelMeshBVHWorker());
+          const bvhWorker = new ParallelMeshBVHWorker();
+          pathTracer.setBVHWorker(bvhWorker);
           await pathTracer.setSceneAsync(scene, camera);
         } catch (workerErr) {
-          // Fallback: synchronous setScene (blocks UI briefly but always works)
-          console.warn("BVH worker unavailable, using sync:", workerErr.message);
-          pathTracer.setScene(scene, camera);
+          console.warn("BVH worker not available, trying sync setScene:", workerErr);
+          try {
+            // Versuch 1: GenerateMeshBVHWorker (alternativer Worker)
+            const { GenerateMeshBVHWorker } = await import("three-mesh-bvh/src/workers/GenerateMeshBVHWorker.js");
+            const fallbackWorker = new GenerateMeshBVHWorker();
+            pathTracer.setBVHWorker(fallbackWorker);
+            await pathTracer.setSceneAsync(scene, camera);
+          } catch (workerErr2) {
+            console.warn("Any worker failed, using main-thread sync BVH:", workerErr2);
+            // Versuch 2: ohne Worker — setScene direkt (blockiert UI kurz)
+            pathTracer.setScene(scene, camera);
+          }
         }
         if (cancelled) return;
 
@@ -2002,19 +2032,31 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     try {
       const b=mapRef.current.getBounds();
       const south=b.getSouth(), west=b.getWest(), north=b.getNorth(), east=b.getEast();
-      // Erweiterte Overpass-QL Query:
-      // Gebäude + Einzelbäume + Baumreihen + Waldflächen + Parks
-      const query=`[out:json][timeout:25];
+      // Erweiterte Overpass-QL Query — deckt praktisch alle Arten von Vegetation + Gebäuden
+      const bbox=`${south},${west},${north},${east}`;
+      const query=`[out:json][timeout:30];
 (
-  way["building"](${south},${west},${north},${east});
-  relation["building"](${south},${west},${north},${east});
-  node["natural"="tree"](${south},${west},${north},${east});
-  way["natural"="tree_row"](${south},${west},${north},${east});
-  way["natural"="wood"](${south},${west},${north},${east});
-  relation["natural"="wood"](${south},${west},${north},${east});
-  way["landuse"="forest"](${south},${west},${north},${east});
-  way["leisure"="park"](${south},${west},${north},${east});
-  relation["leisure"="park"](${south},${west},${north},${east});
+  way["building"](${bbox});
+  relation["building"](${bbox});
+  node["natural"="tree"](${bbox});
+  way["natural"="tree_row"](${bbox});
+  way["natural"="wood"](${bbox});
+  relation["natural"="wood"](${bbox});
+  way["natural"="scrub"](${bbox});
+  way["natural"="shrubbery"](${bbox});
+  way["natural"="grassland"](${bbox});
+  way["natural"="heath"](${bbox});
+  way["landuse"="forest"](${bbox});
+  relation["landuse"="forest"](${bbox});
+  way["landuse"="grass"](${bbox});
+  way["landuse"="meadow"](${bbox});
+  way["landuse"="recreation_ground"](${bbox});
+  way["landuse"="village_green"](${bbox});
+  way["leisure"="park"](${bbox});
+  relation["leisure"="park"](${bbox});
+  way["leisure"="garden"](${bbox});
+  way["leisure"="nature_reserve"](${bbox});
+  way["barrier"="hedge"](${bbox});
 );
 out geom;`;
       const response=await fetch("https://overpass-api.de/api/interpreter",{
@@ -2085,36 +2127,77 @@ out geom;`;
           }
           nTreeRows++;
         }
-        // ── Wald / Park → Grünfläche mit Beispielbäumen ─────────────
-        else if(el.type==="way" && el.geometry &&
-          (tags.natural==="wood" || tags.landuse==="forest" || tags.leisure==="park")){
+        // ── Hecke (Linie) ─────────────────────────────────────────────
+        else if(el.type==="way" && tags.barrier==="hedge" && el.geometry){
+          // Hecke als Serie von Einzelbaum-Hindernissen (kleinere Kronen) entlang der Linie
+          const pts=el.geometry;
+          for(let i=0;i<pts.length-1;i++){
+            const a=pts[i], b=pts[i+1];
+            const mPerLat=111320, mPerLng=111320*Math.cos(a.lat*Math.PI/180);
+            const dx=(b.lon-a.lon)*mPerLng, dy=(b.lat-a.lat)*mPerLat;
+            const segLen=Math.sqrt(dx*dx+dy*dy);
+            const nSeg=Math.max(1,Math.floor(segLen/2.5));
+            for(let k=0;k<nSeg;k++){
+              const t=k/nSeg;
+              newObstacles.push({
+                id:uid(), type:"tree",
+                lat:a.lat+(b.lat-a.lat)*t, lng:a.lon+(b.lon-a.lon)*t,
+                r:1.2, label:"Hecke",
+                source:"osm", osmId:`hedge/${el.id}/${i}/${k}`,
+              });
+              nTrees++;
+            }
+          }
+        }
+        // ── Alle Vegetations-/Grünflächen ─────────────────────────────
+        else if(el.type==="way" && el.geometry && (
+            tags.natural==="wood" || tags.natural==="scrub" || tags.natural==="shrubbery" ||
+            tags.natural==="grassland" || tags.natural==="heath" ||
+            tags.landuse==="forest" || tags.landuse==="grass" || tags.landuse==="meadow" ||
+            tags.landuse==="recreation_ground" || tags.landuse==="village_green" ||
+            tags.leisure==="park" || tags.leisure==="garden" || tags.leisure==="nature_reserve"
+          )){
           const coords=el.geometry.map(g=>[g.lat,g.lon]);
           const cLat=coords.reduce((s,c)=>s+c[0],0)/coords.length;
           const cLng=coords.reduce((s,c)=>s+c[1],0)/coords.length;
-          const label= tags.name || (tags.leisure==="park"?"Park":tags.landuse==="forest"?"Wald":"Gehölz");
+          // Kategorie-Label
+          let label;
+          if(tags.name) label=tags.name;
+          else if(tags.leisure==="park") label="Park";
+          else if(tags.leisure==="garden") label="Garten";
+          else if(tags.leisure==="nature_reserve") label="Naturschutz";
+          else if(tags.landuse==="forest"||tags.natural==="wood") label="Wald";
+          else if(tags.natural==="scrub"||tags.natural==="shrubbery") label="Sträucher";
+          else if(tags.natural==="grassland"||tags.landuse==="grass"||tags.landuse==="meadow") label="Wiese";
+          else if(tags.landuse==="recreation_ground") label="Freizeitfläche";
+          else if(tags.landuse==="village_green") label="Dorfanger";
+          else label="Grünfläche";
           newObstacles.push({
             id:uid(), type:"greenArea",
             lat:cLat, lng:cLng, polygon:coords, label,
+            subtype:tags.natural||tags.landuse||tags.leisure,
             source:"osm", osmId:`${el.type}/${el.id}`,
           });
           nGreen++;
-          // In Wald/Park: ~5 verstreute Bäume als Hindernis damit Kollision funktioniert
-          // Nur wenn wirklich Platz-relevant (bei Park, da Spielplatz oft IM Park ist)
-          if(tags.leisure==="park"){
-            // Bounding-Box grob
+          // Dichte Vegetation (Wald/Sträucher): Beispielbäume als Hindernis streuen
+          const denseVeg = tags.natural==="wood" || tags.natural==="scrub" ||
+                           tags.natural==="shrubbery" || tags.landuse==="forest";
+          const parkLike = tags.leisure==="park" || tags.leisure==="garden";
+          if(denseVeg || parkLike){
             let minLat=Infinity,maxLat=-Infinity,minLng=Infinity,maxLng=-Infinity;
             for(const c of coords){
               if(c[0]<minLat) minLat=c[0]; if(c[0]>maxLat) maxLat=c[0];
               if(c[1]<minLng) minLng=c[1]; if(c[1]>maxLng) maxLng=c[1];
             }
-            // 4 Beispielbäume am Rand
-            for(let k=0;k<4;k++){
+            const nExample=denseVeg?6:3;
+            const crownR=(tags.natural==="scrub"||tags.natural==="shrubbery")?1.8:3.5;
+            for(let k=0;k<nExample;k++){
               const tlat=minLat+hashCoord(cLat,cLng,k*3.7)*(maxLat-minLat);
               const tlng=minLng+hashCoord(cLat,cLng,k*5.1+1)*(maxLng-minLng);
               newObstacles.push({
                 id:uid(), type:"tree",
-                lat:tlat, lng:tlng, r:3.5,
-                label:`Baum (${label})`,
+                lat:tlat, lng:tlng, r:crownR,
+                label:(tags.natural==="scrub"||tags.natural==="shrubbery")?"Strauch":`Baum (${label})`,
                 source:"osm", osmId:`${el.type}/${el.id}/est${k}`,
               });
               nTrees++;
@@ -2695,8 +2778,8 @@ out geom;`;
           worldGroup.add(mesh);
         } catch(e){ console.warn("greenArea 3D failed",e); }
       } else if(ob.type==="buildingPoly" && ob.polygon){
-        // OSM-Gebäude: echten Umriss extrudieren
-        const bh=3.2; // Standardhöhe 3.2m
+        // OSM-Gebäude: echten Umriss extrudieren (Höhe auf Boden stehend)
+        const bh=3.5; // Standardhöhe 3.5m
         try {
           const shape=new THREE.Shape();
           ob.polygon.forEach(([plat,plng],i)=>{
@@ -2706,18 +2789,22 @@ out geom;`;
           });
           const extrudeSettings={depth:bh,bevelEnabled:false,steps:1};
           const geo=new THREE.ExtrudeGeometry(shape,extrudeSettings);
-          geo.rotateX(-Math.PI/2); // shape liegt in XZ, extrudiert wird Y
-          // Translate to correct Y = 0..bh
-          const pos=geo.attributes.position;
-          for(let i=0;i<pos.count;i++){
-            pos.setY(i, pos.getY(i)+bh);
-          }
-          pos.needsUpdate=true;
+          // rotateX(-π/2) verschiebt den Extrudierungs-Bereich von +Z auf +Y,
+          // ergibt automatisch y=0 (Boden) bis y=bh (Dach). KEIN Y-Offset nötig!
+          geo.rotateX(-Math.PI/2);
           geo.computeVertexNormals();
-          const mesh=new THREE.Mesh(geo,
-            new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.85,side:THREE.DoubleSide}));
+          const wallMat=new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.88,metalness:0,side:THREE.DoubleSide});
+          const mesh=new THREE.Mesh(geo,wallMat);
           mesh.castShadow=true; mesh.receiveShadow=true;
           worldGroup.add(mesh);
+          // Flaches Dach oben drauf (gleicher Shape, etwas dunkler, leicht über Wand-Kante)
+          const roofGeo=new THREE.ShapeGeometry(shape);
+          roofGeo.rotateX(-Math.PI/2);
+          const roofMat=new THREE.MeshStandardMaterial({color:"#7C4A2E",roughness:.78,metalness:0,side:THREE.DoubleSide});
+          const roof=new THREE.Mesh(roofGeo,roofMat);
+          roof.position.y=bh+0.02;
+          roof.castShadow=true; roof.receiveShadow=true;
+          worldGroup.add(roof);
         } catch(e){ console.warn("buildingPoly 3D failed",e); }
       }
     });
