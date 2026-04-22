@@ -36,23 +36,55 @@ const CAT_COLORS = { Schaukeln:"#3B82F6",Rutschen:"#EF4444",Klettern:"#8B5CF6",S
 const DYNAMIC_CATS = ["Schaukeln","Wipptiere","Karussell","Rutschen"];
 
 const initEquipment = [
-  { id:1, name:"Doppelschaukel Robinie",       cat:"Schaukeln",   age:"Schulkinder (6–12)",   mat:"Robinie",           mfr:1, price:2850, fallZone:2.5, size:[3.0,0.8], color:"#3B82F6", icon:"🏗", desc:"Klassische Doppelschaukel, 2 Sitze, Rahmen Robinie" },
-  { id:2, name:"Röhrenrutsche 3m",              cat:"Rutschen",    age:"Schulkinder (6–12)",   mat:"Edelstahl",         mfr:2, price:4200, fallZone:2.0, size:[4.0,1.2], color:"#EF4444", icon:"🛝", desc:"Geschlossene Röhrenrutsche 3m, Edelstahlrutschbahn" },
-  { id:3, name:"Kletterpyramide Holz",          cat:"Klettern",    age:"Altersgemischt",       mat:"KDI",               mfr:1, price:5600, fallZone:1.5, size:[3.5,3.5], color:"#8B5CF6", icon:"🧗", desc:"Kletterpyramide aus druckimprägniertem Holz, 4m hoch" },
-  { id:4, name:"Sandkasten XL",                 cat:"Sandspiel",   age:"Kleinkinder (1–3)",    mat:"Robinie",           mfr:3, price:890,  fallZone:0,   size:[3.0,3.0], color:"#F59E0B", icon:"🏖", desc:"Grosser Sandkasten mit Abdeckung, Sitzkanten Robinie" },
-  { id:5, name:"Federwipptier Elefant",         cat:"Wipptiere",   age:"Kleinkinder (1–3)",    mat:"Pulverbeschichtet", mfr:2, price:680,  fallZone:1.5, size:[1.2,0.8], color:"#10B981", icon:"🐴", desc:"Federwipptier Elefant, pulverbeschichtet, Sicherheitsfeder" },
-  { id:6, name:"Karussell 2m",                  cat:"Karussell",   age:"Kindergarten (3–6)",   mat:"Edelstahl",         mfr:2, price:3200, fallZone:3.0, size:[2.2,2.2], color:"#EC4899", icon:"🎠", desc:"Drehteller Edelstahl, Ø 2m, Antirutschbelag" },
-  { id:7, name:"Balancierbalken-Set",           cat:"Balancieren", age:"Kindergarten (3–6)",   mat:"Robinie",           mfr:3, price:1200, fallZone:1.0, size:[5.0,1.0], color:"#6366F1", icon:"⚖️", desc:"Kombination aus 5 Balancierelementen Robinie" },
-  { id:8, name:"Spielhaus Ritterkastell",       cat:"Spielhäuser", age:"Schulkinder (6–12)",   mat:"Douglasie",         mfr:1, price:8900, fallZone:1.5, size:[4.5,4.0], color:"#D97706", icon:"🏠", desc:"Grosses Spielhaus 2-stöckig mit Rutsche und Kletter" },
-  { id:9, name:"Wackelbrücke",                  cat:"Balancieren", age:"Schulkinder (6–12)",   mat:"Robinie",           mfr:1, price:1850, fallZone:1.5, size:[3.5,1.2], color:"#6366F1", icon:"⚖️", desc:"Hängebrücke mit Holzdielen und Stahlseilen" },
-  { id:10,name:"EPDM Fallschutz (m²)",          cat:"Fallschutz",  age:"Altersgemischt",       mat:"Edelstahl",         mfr:4, price:85,   fallZone:0,   size:[1.0,1.0], color:"#059669", icon:"🟩", desc:"EPDM Fallschutzbelag, diverse Farben, 4cm" },
+  // ── Bestehende Geräte ──────────────────────────────────────────────────────
+  { id:1,  name:"Doppelschaukel Robinie",        cat:"Schaukeln",   age:"Schulkinder (6–12)",  mat:"Robinie",           mfr:1,  price:2850,  fallZone:2.5, size:[3.0,0.8], color:"#3B82F6", icon:"🏗", desc:"Klassische Doppelschaukel, 2 Sitze, Rahmen Robinie" },
+  { id:2,  name:"Röhrenrutsche 3m",              cat:"Rutschen",    age:"Schulkinder (6–12)",  mat:"Edelstahl",         mfr:2,  price:4200,  fallZone:2.0, size:[4.0,1.2], color:"#EF4444", icon:"🛝", desc:"Geschlossene Röhrenrutsche 3m, Edelstahlrutschbahn" },
+  { id:3,  name:"Kletterpyramide Holz",          cat:"Klettern",    age:"Altersgemischt",      mat:"KDI",               mfr:1,  price:5600,  fallZone:1.5, size:[3.5,3.5], color:"#8B5CF6", icon:"🧗", desc:"Kletterpyramide aus druckimprägniertem Holz, 4m hoch" },
+  { id:4,  name:"Sandkasten XL",                 cat:"Sandspiel",   age:"Kleinkinder (1–3)",   mat:"Robinie",           mfr:3,  price:890,   fallZone:0,   size:[3.0,3.0], color:"#F59E0B", icon:"🏖", desc:"Grosser Sandkasten mit Abdeckung, Sitzkanten Robinie" },
+  { id:5,  name:"Federwipptier Elefant",         cat:"Wipptiere",   age:"Kleinkinder (1–3)",   mat:"Pulverbeschichtet", mfr:2,  price:680,   fallZone:1.5, size:[1.2,0.8], color:"#10B981", icon:"🐴", desc:"Federwipptier Elefant, pulverbeschichtet, Sicherheitsfeder" },
+  { id:6,  name:"Karussell 2m",                  cat:"Karussell",   age:"Kindergarten (3–6)",  mat:"Edelstahl",         mfr:2,  price:3200,  fallZone:3.0, size:[2.2,2.2], color:"#EC4899", icon:"🎠", desc:"Drehteller Edelstahl, Ø 2m, Antirutschbelag" },
+  { id:7,  name:"Balancierbalken-Set",           cat:"Balancieren", age:"Kindergarten (3–6)",  mat:"Robinie",           mfr:3,  price:1200,  fallZone:1.0, size:[5.0,1.0], color:"#6366F1", icon:"⚖️", desc:"Kombination aus 5 Balancierelementen Robinie" },
+  { id:8,  name:"Spielhaus Ritterkastell",       cat:"Spielhäuser", age:"Schulkinder (6–12)",  mat:"Douglasie",         mfr:1,  price:8900,  fallZone:1.5, size:[4.5,4.0], color:"#D97706", icon:"🏠", desc:"Grosses Spielhaus 2-stöckig mit Rutsche und Kletter" },
+  { id:9,  name:"Wackelbrücke",                  cat:"Balancieren", age:"Schulkinder (6–12)",  mat:"Robinie",           mfr:1,  price:1850,  fallZone:1.5, size:[3.5,1.2], color:"#6366F1", icon:"⚖️", desc:"Hängebrücke mit Holzdielen und Stahlseilen" },
+  { id:10, name:"EPDM Fallschutz (m²)",          cat:"Fallschutz",  age:"Altersgemischt",      mat:"Edelstahl",         mfr:4,  price:85,    fallZone:0,   size:[1.0,1.0], color:"#059669", icon:"🟩", desc:"EPDM Fallschutzbelag, diverse Farben, 4cm" },
+
+  // ── KOMPAN Schaukeln – Klassische A-Rahmen ─────────────────────────────────
+  // Art.-Nr., Name, Preis, Fläche, Nutzer von kompan.com/de/de
+  { id:101, name:"KOMPAN Doppelschaukel H:2,0m",            cat:"Schaukeln", age:"Kindergarten (3–6)",  mat:"Edelstahl", mfr:5, price:1610, fallZone:2.0, size:[3.4,1.0], color:"#3B82F6", icon:"🏗", artNr:"KSW90010", desc:"KOMPAN A-Rahmen Doppelschaukel, Höhe 2,0 m, 2 Sitze, Sicherheitskette. Fläche: 20,8 m². 2 Nutzer." },
+  { id:102, name:"KOMPAN Doppelschaukel H:2,5m",            cat:"Schaukeln", age:"Schulkinder (6–12)",  mat:"Edelstahl", mfr:5, price:1740, fallZone:2.5, size:[3.8,1.0], color:"#3B82F6", icon:"🏗", artNr:"KSW90014", desc:"KOMPAN A-Rahmen Doppelschaukel, Höhe 2,5 m, 2 Sitze. Fläche: 23,3 m². 2 Nutzer." },
+  { id:103, name:"KOMPAN Nestschaukel Seilnest H:2,5m",     cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:2850, fallZone:2.5, size:[3.5,3.5], color:"#3B82F6", icon:"🏗", artNr:"KSW90040", desc:"KOMPAN A-Rahmen Nestschaukel, Höhe 2,5 m, Seilnest Ø 100 cm. Fläche: 17,4 m². 6 Nutzer." },
+  { id:104, name:"KOMPAN Nestschaukel Schalennest H:2,5m",  cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:3080, fallZone:2.5, size:[3.5,3.5], color:"#3B82F6", icon:"🏗", artNr:"KSW90062", desc:"KOMPAN A-Rahmen Nestschaukel, Höhe 2,5 m, Schalennest Ø 100 cm. 6 Nutzer." },
+  { id:105, name:"KOMPAN Schaukel-Kombi Seilnest H:2,5m",   cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:5660, fallZone:2.5, size:[7.2,2.0], color:"#3B82F6", icon:"🏗", artNr:"KSW90045", desc:"KOMPAN A-Rahmen Schaukel-Kombi, Höhe 2,5 m, Seilnest Ø 100 cm + 2 Sitze. Fläche: 40,7 m². 8 Nutzer." },
+  { id:106, name:"KOMPAN Schaukel-Kombi Schalennest H:2,5m",cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:3920, fallZone:2.5, size:[7.2,2.0], color:"#3B82F6", icon:"🏗", artNr:"KSW90063", desc:"KOMPAN A-Rahmen Schaukel-Kombi, Höhe 2,5 m, Schalennest Ø 100 cm + 2 Sitze. Fläche: 40,7 m². 8 Nutzer." },
+
+  // ── KOMPAN Schaukeln – Tor-Rahmen ──────────────────────────────────────────
+  { id:111, name:"KOMPAN Tor-Doppelschaukel H:2,5m",        cat:"Schaukeln", age:"Schulkinder (6–12)",  mat:"Edelstahl", mfr:5, price:2410, fallZone:2.5, size:[4.0,1.2], color:"#2563EB", icon:"🏗", artNr:"KSW92003", desc:"KOMPAN Tor-Rahmen Doppelschaukel, Höhe 2,5 m, 2 Sitze. Fläche: 24 m². 2 Nutzer." },
+  { id:112, name:"KOMPAN Tor-Doppelschaukel Anti-Überschlag H:3m", cat:"Schaukeln", age:"Schulkinder (6–12)", mat:"Edelstahl", mfr:5, price:3050, fallZone:3.0, size:[4.5,1.2], color:"#2563EB", icon:"🏗", artNr:"KSW92006", desc:"KOMPAN Tor-Rahmen Doppelschaukel, Höhe 3,0 m mit Anti-Überschlag-Sicherung. Fläche: 26,5 m². 2 Nutzer." },
+  { id:113, name:"KOMPAN Tor-Nestschaukel Schalennest H:2,5m",cat:"Schaukeln", age:"Altersgemischt",     mat:"Edelstahl", mfr:5, price:3080, fallZone:2.5, size:[3.8,3.8], color:"#2563EB", icon:"🏗", artNr:"KSW92007", desc:"KOMPAN Tor-Rahmen Nestschaukel, Höhe 2,5 m, Schalennest Ø 100 cm. Fläche: 17,5 m². 6 Nutzer." },
+  { id:114, name:"KOMPAN Tor-Nestschaukel Seilnest H:2,5m",  cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:3540, fallZone:2.5, size:[3.8,3.8], color:"#2563EB", icon:"🏗", artNr:"KSW92008", desc:"KOMPAN Tor-Rahmen Nestschaukel, Höhe 2,5 m, Seilnest Ø 100 cm. Fläche: 17,5 m². 6 Nutzer." },
+  { id:115, name:"KOMPAN Tor-Schaukel-Kombi Seilnest H:2,5m",cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:5250, fallZone:2.5, size:[7.5,2.2], color:"#2563EB", icon:"🏗", artNr:"KSW92011", desc:"KOMPAN Tor-Rahmen Schaukel-Kombi, Höhe 2,5 m, Seilnest Ø 100 cm + 2 Sitze. Fläche: 41,5 m². 8 Nutzer." },
+
+  // ── KOMPAN Schaukeln – Besondere / Spezial ─────────────────────────────────
+  { id:121, name:"KOMPAN Kokoswellen-Schaukel",             cat:"Schaukeln", age:"Altersgemischt",      mat:"Kombiniert",mfr:5, price:6860,  fallZone:2.5, size:[3.5,3.5], color:"#1D4ED8", icon:"🏗", artNr:"M98701", desc:"KOMPAN Kokoswellen-Schaukel, natürliche Kokosfaser, federnd. Fläche: 15,1 m². 4 Nutzer. Ab 2 Jahre." },
+  { id:122, name:"KOMPAN Giant Kokoswellen-Schaukel",       cat:"Schaukeln", age:"Altersgemischt",      mat:"Kombiniert",mfr:5, price:11100, fallZone:3.0, size:[5.0,4.0], color:"#1D4ED8", icon:"🏗", artNr:"M984",   desc:"KOMPAN Giant Kokoswellen-Schaukel, XXL-Format. Fläche: 22,9 m². 8 Nutzer. Ab 6 Jahre." },
+  { id:123, name:"KOMPAN Fünferschaukel",                   cat:"Schaukeln", age:"Schulkinder (6–12)",  mat:"Edelstahl", mfr:5, price:5580,  fallZone:2.5, size:[8.0,1.5], color:"#1D4ED8", icon:"🏗", artNr:"M978",   desc:"KOMPAN Fünferschaukel, 5 Sitze, Stahlrahmen. Fläche: 46,9 m². 5 Nutzer." },
+  { id:124, name:"KOMPAN Dinoschaukel",                     cat:"Schaukeln", age:"Altersgemischt",      mat:"Kombiniert",mfr:5, price:7800,  fallZone:3.0, size:[8.0,5.0], color:"#1D4ED8", icon:"🏗", artNr:"M98002", desc:"KOMPAN Dinoschaukel, thematische Grossschaukel mit Dinosaurier-Form. Fläche: 53,6 m². 6 Nutzer." },
+  { id:125, name:"KOMPAN Mini-Dinoschaukel",                cat:"Schaukeln", age:"Kleinkinder (1–3)",   mat:"Kombiniert",mfr:5, price:3190,  fallZone:2.5, size:[5.0,4.5], color:"#1D4ED8", icon:"🏗", artNr:"M985",   desc:"KOMPAN Mini-Dinoschaukel für Kleinkinder. Fläche: 51,2 m². 1 Nutzer. Ab 2 Jahre." },
+  { id:126, name:"KOMPAN Riesen-Schaukelnest",              cat:"Schaukeln", age:"Altersgemischt",      mat:"Kombiniert",mfr:5, price:13400, fallZone:3.5, size:[8.0,6.0], color:"#1D4ED8", icon:"🏗", artNr:"M983",   desc:"KOMPAN Riesen-Schaukelnest, grosses Familiennest. Fläche: 61,4 m². 7 Nutzer." },
+
+  // ── KOMPAN Schaukelsitze / Zubehör ─────────────────────────────────────────
+  { id:131, name:"KOMPAN You & Me Schaukelsitz H:2,5m",     cat:"Schaukeln", age:"Kleinkinder (1–3)",   mat:"Edelstahl", mfr:5, price:1070, fallZone:2.5, size:[0.5,0.5], color:"#60A5FA", icon:"🏗", artNr:"SW990121", desc:"KOMPAN You & Me-Schaukelsitz für 2 Kinder gleichzeitig, Höhe 2,5 m." },
+  { id:132, name:"KOMPAN Kleinkind-Schaukelsitz H:2,5m",    cat:"Schaukeln", age:"Kleinkinder (1–3)",   mat:"Edelstahl", mfr:5, price:390,  fallZone:2.5, size:[0.5,0.5], color:"#60A5FA", icon:"🏗", artNr:"SW990026", desc:"KOMPAN Kleinkind-Schaukelsitz mit Bügel für Höhe 2,5 m. Sicherheitsbügel." },
+  { id:133, name:"KOMPAN Inklusiv-Schaukelsitz 4 Ketten",   cat:"Schaukeln", age:"Altersgemischt",      mat:"Edelstahl", mfr:5, price:2110, fallZone:2.5, size:[0.8,0.8], color:"#60A5FA", icon:"🏗", artNr:"SW990207", desc:"KOMPAN Inklusiv-Schaukelsitz, 4-Punkt-Befestigung, barrierefrei, Höhe 2,5 m." },
+  { id:134, name:"KOMPAN Schalennest Ø 120 cm",             cat:"Schaukeln", age:"Altersgemischt",      mat:"Kombiniert",mfr:5, price:1160, fallZone:2.5, size:[1.2,1.2], color:"#60A5FA", icon:"🏗", artNr:"SW990091", desc:"KOMPAN Schalennest Ø 120 cm als Ersatz/Erweiterung für Nestschaukeln." },
 ];
 
 const initManufacturers = [
-  { id:1, name:"Berliner Seilfabrik",  country:"DE", contact:"info@bsf.de",       web:"berliner-seilfabrik.de", note:"Premium Seilspielgeräte" },
-  { id:2, name:"Lappset Group",        country:"FI", contact:"info@lappset.com",  web:"lappset.com",            note:"Innovative Spielkonzepte" },
-  { id:3, name:"Richter Spielgeräte", country:"DE", contact:"info@richter.de",   web:"richter-spielgeraete.de",note:"Klassische Holzgeräte" },
-  { id:4, name:"Playparc",             country:"DE", contact:"info@playparc.de",  web:"playparc.de",             note:"Fallschutz & Beläge" },
+  { id:1, name:"Berliner Seilfabrik",  country:"DE", contact:"info@bsf.de",           web:"berliner-seilfabrik.de",  note:"Premium Seilspielgeräte" },
+  { id:2, name:"Lappset Group",        country:"FI", contact:"info@lappset.com",      web:"lappset.com",             note:"Innovative Spielkonzepte" },
+  { id:3, name:"Richter Spielgeräte",  country:"DE", contact:"info@richter.de",       web:"richter-spielgeraete.de", note:"Klassische Holzgeräte" },
+  { id:4, name:"Playparc",             country:"DE", contact:"info@playparc.de",      web:"playparc.de",             note:"Fallschutz & Beläge" },
+  { id:5, name:"KOMPAN",               country:"DK", contact:"info@kompan.de",        web:"kompan.com",              note:"Weltweiter Marktführer Spielplatzgeräte. Schaukeln, Klettergeräte, Karussells, Sportgeräte." },
 ];
 
 const initProjects = [
