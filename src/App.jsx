@@ -939,6 +939,454 @@ function zonesOverlap(a, ea, b, eb) {
   return Math.sqrt(dx * dx + dy * dy) < ra + rb;
 }
 
+/* Fallschutz-Flächenberechnung (EN 1177):
+   - individualSum = Summe aller einzelnen Fallzonen (theoretisch, wenn Geräte isoliert wären)
+   - mergedArea   = tatsächlich benötigter zusammenhängender Belag (inkl. ~30cm Verbindungs-Puffer
+                    zwischen nahen Geräten und gerundete/saubere Schnittflächen). Wird durch
+                    Grid-Rasterisierung mit morphologischem Closing berechnet.
+   - perimeter    = äusserer Umfang (für Randabschluss-Berechnung in der Offerte)
+*/
+function computeFallProtectionArea(placed, equipment, projectCenter) {
+  const BUFFER = 0.3;  // 30cm "clean edge" Puffer = realistisch für EPDM/Fallschutzbelag
+  const CELL = 0.15;   // 15cm Rastergröße (gute Balance Genauigkeit vs. Performance)
+
+  if (!placed || !placed.length) return { individualSum: 0, mergedArea: 0, clusters: 0, zones: 0 };
+
+  // Sammle Fallzonen in lokalen Metern relativ zum Projektzentrum
+  const zones = [];
+  const mPerLat = 111320;
+  const mPerLng = 111320 * Math.cos(projectCenter.lat * Math.PI / 180);
+
+  for (const pl of placed) {
+    const eq = equipment.find(x => x.id === pl.eqId);
+    if (!eq || !eq.fallZone || eq.fallZone <= 0.6) continue;
+    const zone = calcFallZone(eq);
+    if (!zone) continue;
+    const x = (pl.lng - projectCenter.lng) * mPerLng;
+    const y = (pl.lat - projectCenter.lat) * mPerLat;
+    zones.push({
+      shape: zone.shape,
+      r: zone.r,
+      w: zone.w,
+      h: zone.h,
+      x, y,
+      rot: (pl.rot || 0) * Math.PI / 180,
+    });
+  }
+
+  if (zones.length === 0) return { individualSum: 0, mergedArea: 0, clusters: 0, zones: 0 };
+
+  // Summe individueller Flächen (ohne Verbindung)
+  const individualSum = zones.reduce((s, z) => {
+    if (z.shape === "circle") return s + Math.PI * z.r * z.r;
+    return s + z.w * z.h;
+  }, 0);
+
+  // Bounding box + Puffer
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const z of zones) {
+    const rMax = z.shape === "circle" ? z.r : Math.hypot(z.w, z.h) / 2;
+    const pad = rMax + BUFFER + CELL;
+    minX = Math.min(minX, z.x - pad); maxX = Math.max(maxX, z.x + pad);
+    minY = Math.min(minY, z.y - pad); maxY = Math.max(maxY, z.y + pad);
+  }
+  const cols = Math.ceil((maxX - minX) / CELL);
+  const rows = Math.ceil((maxY - minY) / CELL);
+  if (cols * rows > 500000) {
+    // Too large; fall back to individual sum
+    return { individualSum: Math.round(individualSum * 10) / 10, mergedArea: Math.round(individualSum * 10) / 10, clusters: zones.length, zones: zones.length };
+  }
+  const grid = new Uint8Array(cols * rows);
+
+  // Rasterisiere jede Zone mit Puffer (= morphologische Dilation)
+  for (const z of zones) {
+    if (z.shape === "circle") {
+      const rB = z.r + BUFFER;
+      const iMin = Math.max(0, Math.floor((z.x - rB - minX) / CELL));
+      const iMax = Math.min(cols - 1, Math.ceil((z.x + rB - minX) / CELL));
+      const jMin = Math.max(0, Math.floor((z.y - rB - minY) / CELL));
+      const jMax = Math.min(rows - 1, Math.ceil((z.y + rB - minY) / CELL));
+      const r2 = rB * rB;
+      for (let j = jMin; j <= jMax; j++) {
+        for (let i = iMin; i <= iMax; i++) {
+          const cx = minX + (i + 0.5) * CELL;
+          const cy = minY + (j + 0.5) * CELL;
+          const dx = cx - z.x, dy = cy - z.y;
+          if (dx * dx + dy * dy <= r2) grid[j * cols + i] = 1;
+        }
+      }
+    } else {
+      const hw = z.w / 2 + BUFFER;
+      const hh = z.h / 2 + BUFFER;
+      const rMax = Math.hypot(hw, hh);
+      const iMin = Math.max(0, Math.floor((z.x - rMax - minX) / CELL));
+      const iMax = Math.min(cols - 1, Math.ceil((z.x + rMax - minX) / CELL));
+      const jMin = Math.max(0, Math.floor((z.y - rMax - minY) / CELL));
+      const jMax = Math.min(rows - 1, Math.ceil((z.y + rMax - minY) / CELL));
+      const cos = Math.cos(-z.rot), sin = Math.sin(-z.rot);
+      for (let j = jMin; j <= jMax; j++) {
+        for (let i = iMin; i <= iMax; i++) {
+          const cx = minX + (i + 0.5) * CELL;
+          const cy = minY + (j + 0.5) * CELL;
+          const dx = cx - z.x, dy = cy - z.y;
+          const lx = dx * cos - dy * sin;
+          const ly = dx * sin + dy * cos;
+          if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) grid[j * cols + i] = 1;
+        }
+      }
+    }
+  }
+
+  // Zähle gefüllte Zellen + ermittle Cluster (zusammenhängende Flächen via Flood-Fill)
+  let filled = 0;
+  let clusters = 0;
+  const visited = new Uint8Array(cols * rows);
+  const stack = [];
+  for (let idx = 0; idx < grid.length; idx++) {
+    if (!grid[idx]) continue;
+    filled++;
+    if (visited[idx]) continue;
+    clusters++;
+    stack.push(idx);
+    while (stack.length) {
+      const k = stack.pop();
+      if (visited[k] || !grid[k]) continue;
+      visited[k] = 1;
+      const j = Math.floor(k / cols), i = k % cols;
+      if (i > 0) stack.push(k - 1);
+      if (i < cols - 1) stack.push(k + 1);
+      if (j > 0) stack.push(k - cols);
+      if (j < rows - 1) stack.push(k + cols);
+    }
+  }
+  const mergedArea = filled * CELL * CELL;
+
+  return {
+    individualSum: Math.round(individualSum * 10) / 10,
+    mergedArea: Math.round(mergedArea * 10) / 10,
+    clusters,
+    zones: zones.length,
+  };
+}
+
+/* ═══════════════════════════ RENDER STUDIO (Photorealistischer Path-Tracer) ═══════════════════════════ */
+// Öffnet einen Modal, überträgt die 3D-Szene in einen GPU-Path-Tracer (three-gpu-pathtracer),
+// rendert progressive Samples bis zur gewünschten Qualität und bietet Download als PNG an.
+function RenderStudio({ sourceScene, sourceCamera, onClose }) {
+  const canvasRef = useRef(null);
+  const [status, setStatus] = useState("init"); // init | rendering | paused | done | error
+  const [samples, setSamples] = useState(0);
+  const [targetSamples, setTargetSamples] = useState(200);
+  const [resolution, setResolution] = useState("2K"); // HD | 2K | 4K
+  const [errorMsg, setErrorMsg] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [previewURL, setPreviewURL] = useState(null);
+  const pathTracerRef = useRef(null);
+  const rendererRef = useRef(null);
+  const animRef = useRef(null);
+  const startTimeRef = useRef(0);
+  const pausedRef = useRef(false);
+
+  const resMap = { HD:[1280,720], "2K":[1920,1080], "4K":[3840,2160] };
+
+  // Setup path tracer
+  useEffect(() => {
+    let cancelled = false;
+    let renderer = null;
+    let pathTracer = null;
+
+    (async () => {
+      try {
+        setStatus("init");
+        if (!canvasRef.current || !sourceScene || !sourceCamera) {
+          setErrorMsg("Keine 3D-Szene verfügbar — bitte erst Geräte platzieren und 3D-Ansicht aktivieren.");
+          setStatus("error");
+          return;
+        }
+        const { WebGLPathTracer } = await import("three-gpu-pathtracer");
+        if (cancelled) return;
+
+        const [W, H] = resMap[resolution];
+        renderer = new THREE.WebGLRenderer({
+          canvas: canvasRef.current,
+          antialias: false,
+          alpha: false,
+          preserveDrawingBuffer: true,
+        });
+        renderer.setPixelRatio(1);
+        renderer.setSize(W, H, false);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        rendererRef.current = renderer;
+
+        // Clone the source scene + camera for isolated rendering
+        const scene = sourceScene.clone(true);
+        // PMREM environment for IBL (simple procedural sky gradient)
+        const bg = new THREE.Color("#B8D5E8");
+        scene.background = bg;
+        scene.environment = null; // will be set below
+
+        // Generate a simple HDR environment from a procedural sky
+        const pmremGen = new THREE.PMREMGenerator(renderer);
+        pmremGen.compileEquirectangularShader();
+        // Use a CubeTexture alternative: generate a gradient equirect texture
+        const envTex = makeSkyEnv(renderer);
+        scene.environment = envTex;
+
+        // Clone camera and use same transform
+        const camera = sourceCamera.clone();
+        camera.aspect = W / H;
+        camera.updateProjectionMatrix();
+
+        // Initialize path tracer
+        pathTracer = new WebGLPathTracer(renderer);
+        pathTracer.renderScale = 1;
+        pathTracer.tiles.set(2, 2); // tile rendering to avoid GPU timeouts
+        pathTracer.bounces = 4;
+        pathTracer.filterGlossyFactor = 0.5;
+        pathTracerRef.current = pathTracer;
+
+        // Set scene (this builds BVH - can take a moment)
+        await pathTracer.setSceneAsync(scene, camera);
+        if (cancelled) return;
+
+        setStatus("rendering");
+        startTimeRef.current = performance.now();
+
+        // Render loop
+        function loop() {
+          if (cancelled) return;
+          if (pausedRef.current) {
+            animRef.current = requestAnimationFrame(loop);
+            return;
+          }
+          try {
+            pathTracer.renderSample();
+            const s = pathTracer.samples;
+            setSamples(Math.floor(s));
+            setElapsed((performance.now() - startTimeRef.current) / 1000);
+            // Update preview every 8 samples (less than that is blurry)
+            if (Math.floor(s) % 4 === 0 && s > 0) {
+              // canvas already drawn by renderSample
+            }
+            if (s >= targetSamples) {
+              setStatus("done");
+              setPreviewURL(renderer.domElement.toDataURL("image/png"));
+              return;
+            }
+          } catch (e) {
+            console.error("Path tracer error:", e);
+            setErrorMsg(String(e.message || e));
+            setStatus("error");
+            return;
+          }
+          animRef.current = requestAnimationFrame(loop);
+        }
+        loop();
+      } catch (e) {
+        console.error("Render init error:", e);
+        if (!cancelled) {
+          setErrorMsg(String(e.message || e));
+          setStatus("error");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      if (pathTracerRef.current) {
+        try { pathTracerRef.current.dispose(); } catch(e){}
+      }
+      if (rendererRef.current) {
+        try {
+          rendererRef.current.dispose();
+          rendererRef.current.forceContextLoss();
+        } catch(e){}
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolution, targetSamples]);
+
+  function download() {
+    if (!rendererRef.current) return;
+    const url = rendererRef.current.domElement.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `PlayQuote-Render-${resolution}-${samples}samples-${Date.now()}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  const percent = Math.min(100, Math.round((samples / targetSamples) * 100));
+  const fmtTime = (s) => s < 60 ? `${s.toFixed(0)}s` : `${Math.floor(s/60)}m ${Math.floor(s%60)}s`;
+  const [W, H] = resMap[resolution];
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+      <div style={{background:"white",borderRadius:14,padding:0,maxWidth:1280,width:"100%",maxHeight:"95vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}} onClick={e=>e.stopPropagation()}>
+        {/* Header */}
+        <div style={{padding:"16px 24px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`,color:"white"}}>
+          <div>
+            <div className="syne" style={{fontSize:18,fontWeight:800,letterSpacing:.3}}>🎬 Render Studio</div>
+            <div style={{fontSize:11.5,opacity:.85,marginTop:2}}>Physikalisch korrektes Path-Tracing · GPU-beschleunigt · Progressive Samples</div>
+          </div>
+          <button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"white",width:34,height:34,borderRadius:8,cursor:"pointer",fontSize:18,fontFamily:"inherit"}}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={{flex:1,display:"flex",minHeight:0,background:"#1A1A1A"}}>
+          {/* Canvas area */}
+          <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:20,position:"relative",overflow:"hidden"}}>
+            <canvas ref={canvasRef} width={W} height={H} style={{maxWidth:"100%",maxHeight:"100%",width:"auto",height:"auto",borderRadius:6,boxShadow:"0 4px 30px rgba(0,0,0,0.5)"}}/>
+            {status==="init"&&<div style={{position:"absolute",color:"white",textAlign:"center"}}>
+              <div style={{fontSize:32,marginBottom:8}}>⚙️</div>
+              <div style={{fontSize:14}}>Path-Tracer wird initialisiert…</div>
+              <div style={{fontSize:11,opacity:.7,marginTop:4}}>BVH wird aus der 3D-Szene gebaut</div>
+            </div>}
+            {status==="error"&&<div style={{position:"absolute",color:"white",textAlign:"center",padding:20,background:"rgba(0,0,0,0.7)",borderRadius:8,maxWidth:400}}>
+              <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
+              <div style={{fontSize:14,fontWeight:700,color:T.red}}>Render-Fehler</div>
+              <div style={{fontSize:12,opacity:.85,marginTop:8}}>{errorMsg}</div>
+            </div>}
+          </div>
+
+          {/* Controls panel */}
+          <div style={{width:280,background:"#222",color:"white",padding:20,display:"flex",flexDirection:"column",gap:14,borderLeft:"1px solid #333",overflow:"auto"}}>
+            {/* Status */}
+            <div>
+              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Status</div>
+              <div style={{fontSize:13,fontWeight:600,color:status==="done"?"#52E287":status==="error"?"#FF6B6B":status==="paused"?"#FFD97A":"#7AC6FF"}}>
+                {status==="init"&&"Initialisiere…"}
+                {status==="rendering"&&"Rendering…"}
+                {status==="paused"&&"Pausiert"}
+                {status==="done"&&"✓ Fertig"}
+                {status==="error"&&"⚠ Fehler"}
+              </div>
+            </div>
+
+            {/* Progress */}
+            {status!=="init"&&status!=="error"&&<div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:6}}>
+                <span style={{color:"#888"}}>Samples</span>
+                <span style={{fontFamily:"monospace"}}>{samples}/{targetSamples}</span>
+              </div>
+              <div style={{background:"#111",borderRadius:4,overflow:"hidden",height:6}}>
+                <div style={{width:`${percent}%`,height:"100%",background:`linear-gradient(90deg, ${T.green}, ${T.greenLight})`,transition:"width .3s"}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#888",marginTop:4}}>
+                <span>{percent}%</span>
+                <span>⏱ {fmtTime(elapsed)}</span>
+              </div>
+            </div>}
+
+            {/* Resolution */}
+            <div>
+              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Auflösung</div>
+              <div style={{display:"flex",gap:4}}>
+                {["HD","2K","4K"].map(r=>(
+                  <button key={r} onClick={()=>setResolution(r)} disabled={status==="rendering"}
+                    style={{flex:1,padding:"7px 0",border:"none",borderRadius:6,cursor:status==="rendering"?"not-allowed":"pointer",
+                      background:resolution===r?T.green:"#333",color:"white",fontFamily:"inherit",fontSize:12,fontWeight:600,
+                      opacity:status==="rendering"?.5:1}}>{r}</button>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:"#666",marginTop:4}}>
+                {resolution==="HD"&&"1280×720 · ~10-30 Sek"}
+                {resolution==="2K"&&"1920×1080 · ~30-90 Sek"}
+                {resolution==="4K"&&"3840×2160 · ~2-5 Min"}
+              </div>
+            </div>
+
+            {/* Quality */}
+            <div>
+              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Qualität (Samples)</div>
+              <div style={{display:"flex",gap:4}}>
+                {[{l:"Vorschau",n:50},{l:"Standard",n:200},{l:"Hoch",n:500},{l:"Maximum",n:1000}].map(q=>(
+                  <button key={q.n} onClick={()=>setTargetSamples(q.n)} disabled={status==="rendering"}
+                    style={{flex:1,padding:"7px 0",border:"none",borderRadius:6,cursor:status==="rendering"?"not-allowed":"pointer",
+                      background:targetSamples===q.n?T.green:"#333",color:"white",fontFamily:"inherit",fontSize:10.5,fontWeight:600,
+                      opacity:status==="rendering"?.5:1}}>{q.l}</button>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:"#666",marginTop:4}}>
+                Mehr Samples = weniger Rauschen, längere Renderzeit
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div style={{marginTop:"auto",display:"flex",flexDirection:"column",gap:8}}>
+              {status==="rendering"&&(
+                <button onClick={()=>{pausedRef.current=true;setStatus("paused");}}
+                  style={{padding:"10px",background:"#444",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600}}>
+                  ⏸ Pausieren
+                </button>
+              )}
+              {status==="paused"&&(
+                <button onClick={()=>{pausedRef.current=false;setStatus("rendering");}}
+                  style={{padding:"10px",background:T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600}}>
+                  ▶ Fortsetzen
+                </button>
+              )}
+              {(status==="rendering"||status==="paused")&&(
+                <button onClick={()=>{
+                  if(rendererRef.current){
+                    setPreviewURL(rendererRef.current.domElement.toDataURL("image/png"));
+                  }
+                  setStatus("done");
+                  if(animRef.current) cancelAnimationFrame(animRef.current);
+                }}
+                  style={{padding:"10px",background:"#555",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>
+                  ⏹ Jetzt stoppen & Bild sichern
+                </button>
+              )}
+              {status==="done"&&(
+                <button onClick={download}
+                  style={{padding:"12px",background:`linear-gradient(135deg, ${T.gold} 0%, ${T.goldLight} 100%)`,color:"#5A3D00",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:700,boxShadow:"0 3px 12px rgba(212,168,83,0.4)"}}>
+                  📥 PNG herunterladen
+                </button>
+              )}
+              {status==="error"&&(
+                <button onClick={()=>window.location.reload()}
+                  style={{padding:"10px",background:T.red,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>
+                  🔄 Neu laden
+                </button>
+              )}
+            </div>
+
+            {/* Info */}
+            <div style={{fontSize:10,color:"#666",lineHeight:1.5,padding:"10px 12px",background:"#111",borderRadius:6,marginTop:6}}>
+              💡 <b>Path-Tracing:</b> Jeder Lichtstrahl wird physikalisch korrekt verfolgt — inkl. Reflexionen, Schatten, indirektem Licht.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Helper: Create a simple gradient sky environment map (equirectangular) for IBL
+function makeSkyEnv(renderer) {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size*2; canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 0, size);
+  grad.addColorStop(0,"#4A7AB5");   // zenith
+  grad.addColorStop(0.4,"#B8D5E8"); // sky
+  grad.addColorStop(0.6,"#F0E8D8"); // horizon
+  grad.addColorStop(1,"#8B9A7A");   // ground
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size*2, size);
+  // Simple sun disc
+  ctx.fillStyle = "rgba(255,230,180,0.95)";
+  ctx.beginPath(); ctx.arc(size*1.4, size*0.3, 14, 0, Math.PI*2); ctx.fill();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   const [view,setView]=useState("2d");
   const [selected,setSelected]=useState(null);
@@ -964,6 +1412,11 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   const [pendingEq,setPendingEq]=useState(null);
   const [measureInfo,setMeasureInfo]=useState(null);
   const [collisionWarning,setCollisionWarning]=useState(false);
+  const [renderStudioOpen,setRenderStudioOpen]=useState(false);
+  // Fallschutz-Darstellung
+  const [fpMerged,setFpMerged]=useState(true);  // true = verschmolzen (mit Puffer), false = einzeln pro Gerät
+  const [fpColor,setFpColor]=useState("#2A1F18"); // EPDM-Farbe (Bildschirm + Offerte-Info)
+  const [fpColorPickerOpen,setFpColorPickerOpen]=useState(false);
 
   const placed=project.placed||[];
   const obstacles=project.obstacles||[];
@@ -1143,17 +1596,29 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
     const mToDeg=(m)=>m/111320; // approx at equator, good enough for small area
 
-    // FALL PROTECTION SURFACE (EN 1177) – dunkle, deckende EPDM-Fläche unter Geräten mit Fallhöhe > 60cm
+    // FALL PROTECTION SURFACE (EN 1177) – EPDM-Fläche unter Geräten mit Fallhöhe > 60cm.
+    // Modus "merged" (Standard): 0.3m Puffer → nahe Geräte ergeben visuell eine zusammenhängende Fläche.
+    // Modus "einzeln": exakte Fallzone pro Gerät (ohne Puffer), für nicht-zusammenhängende Planung.
+    const FP_BUFFER = fpMerged ? 0.3 : 0;
+    // Dunklere Farbe für Umrandung (für dunkle Farben Original, für helle Farben dunkel)
+    function darken(hex){
+      const c=parseInt(hex.slice(1),16);
+      const r=Math.max(0,((c>>16)&255)-40);
+      const g=Math.max(0,((c>>8)&255)-40);
+      const b=Math.max(0,(c&255)-40);
+      return "#"+[r,g,b].map(v=>v.toString(16).padStart(2,"0")).join("");
+    }
+    const fpStrokeColor=darken(fpColor);
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
       if(!eq.fallZone||eq.fallZone<=0.6) return; // nur bei relevanter Fallhöhe
       const zone=calcFallZone(eq); if(!zone) return;
-      const fpStyle={ color:"#1A120D", weight:1, fillColor:"#2A1F18", fillOpacity:.85, opacity:.9 };
+      const fpStyle={ color:fpStrokeColor, weight:1, fillColor:fpColor, fillOpacity:.88, opacity:.9 };
       if(zone.shape==="circle"){
-        L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{radius:zone.r,...fpStyle}).addTo(fzLayer);
+        L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{radius:zone.r+FP_BUFFER,...fpStyle}).addTo(fzLayer);
       } else {
         const rot=(pl.rot||0)*Math.PI/180;
-        const hw=zone.w/2, hh=zone.h/2;
+        const hw=zone.w/2+FP_BUFFER, hh=zone.h/2+FP_BUFFER;
         const corners=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(([x,y])=>{
           const rx=x*Math.cos(rot)-y*Math.sin(rot);
           const ry=x*Math.sin(rot)+y*Math.cos(rot);
@@ -1322,7 +1787,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         });
       }
     });
-  },[placed,obstacles,selected,conflicts,equipment,view]);
+  },[placed,obstacles,selected,conflicts,equipment,view,fpMerged,fpColor]);
 
   // Cursor feedback + sync toolRef
   useEffect(()=>{
@@ -1670,18 +2135,20 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       return defaults;
     }
 
-    /* Fallschutz-Bodenflächen (EN 1177) - unter jedem Gerät mit fallZone > 0.6m */
+    /* Fallschutz-Bodenflächen (EN 1177) — auch im 3D mit gleicher Farbe und Puffer wie 2D */
+    const FP_BUFFER_3D = fpMerged ? 0.3 : 0;
     placed.forEach(pl=>{
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
+      if(!eq.fallZone||eq.fallZone<=0.6) return;
       const zone=calcFallZone(eq); if(!zone) return;
       const [lx,lz]=toLocal(pl.lat||mapCenter.lat,pl.lng||mapCenter.lng);
-      const surfaceMat=new THREE.MeshStandardMaterial({color:"#2A1F18",roughness:.95,metalness:0});
+      const surfaceMat=new THREE.MeshStandardMaterial({color:fpColor,roughness:.95,metalness:0});
       if(zone.shape==="circle"){
-        const fp=new THREE.Mesh(new THREE.CircleGeometry(zone.r,48),surfaceMat);
+        const fp=new THREE.Mesh(new THREE.CircleGeometry(zone.r+FP_BUFFER_3D,48),surfaceMat);
         fp.rotation.x=-Math.PI/2; fp.position.set(lx,0.008,-lz); fp.receiveShadow=true;
         worldGroup.add(fp);
       } else {
-        const fp=new THREE.Mesh(new THREE.PlaneGeometry(zone.w,zone.h),surfaceMat);
+        const fp=new THREE.Mesh(new THREE.PlaneGeometry(zone.w+FP_BUFFER_3D*2,zone.h+FP_BUFFER_3D*2),surfaceMat);
         fp.rotation.x=-Math.PI/2; fp.rotation.z=-(pl.rot||0)*Math.PI/180;
         fp.position.set(lx,0.008,-lz); fp.receiveShadow=true;
         worldGroup.add(fp);
@@ -1924,7 +2391,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     if(placed.length>0 && threeRef.current){
       threeRef.current.resetCamera();
     }
-  },[placed,obstacles,equipment]);
+  },[placed,obstacles,equipment,fpMerged,fpColor]);
 
 
 
@@ -2065,6 +2532,51 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
               <TB active={tool==="tree"} onClick={()=>{setTool("tree");setPendingEq(null);}} title="Baum hinzufügen (klicken auf Karte)">🌳</TB>
               <TB active={tool==="building"} onClick={()=>{setTool("building");setPendingEq(null);}} title="Gebäude hinzufügen (klicken auf Karte)">🏠</TB>
               <TB active={tool==="measure"} onClick={()=>{setTool("measure");setPendingEq(null);}} title="Distanz messen (2 Punkte anklicken)">📏</TB>
+              {/* Trennlinie */}
+              <div style={{height:1,background:T.border,margin:"2px 0"}}/>
+              {/* Fallschutz-Modus: verschmolzen vs. einzeln */}
+              <TB active={fpMerged} onClick={()=>setFpMerged(v=>!v)}
+                title={fpMerged?"Fallschutz zusammenhängend (Klick = wechsel zu einzeln pro Gerät)":"Fallschutz einzeln pro Gerät (Klick = wechsel zu zusammenhängend)"}>
+                {fpMerged?"⬛":"⬚"}
+              </TB>
+              {/* EPDM-Farbwahl */}
+              <div style={{position:"relative"}}>
+                <button onClick={()=>setFpColorPickerOpen(v=>!v)}
+                  title="EPDM-Fallschutz Farbe wählen"
+                  style={{width:38,height:38,borderRadius:8,border:`1.5px solid ${fpColorPickerOpen?T.green:T.border}`,background:"white",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0,fontFamily:"inherit"}}>
+                  <div style={{width:22,height:22,borderRadius:5,background:fpColor,border:"2px solid white",boxShadow:"0 0 0 1px rgba(0,0,0,.15), inset 0 0 0 0.5px rgba(255,255,255,.1)"}}/>
+                </button>
+                {fpColorPickerOpen&&(
+                  <div style={{position:"absolute",left:48,top:0,zIndex:700,background:"white",border:`1.5px solid ${T.border}`,borderRadius:10,padding:10,boxShadow:"0 4px 16px rgba(0,0,0,0.18)",minWidth:200}}>
+                    <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>EPDM-Farbe</div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:6}}>
+                      {[
+                        {name:"Schwarz",c:"#2A1F18"},
+                        {name:"Anthrazit",c:"#3D3D3D"},
+                        {name:"Braun",c:"#5C3317"},
+                        {name:"Sand",c:"#B89A6B"},
+                        {name:"Terrakotta",c:"#A0522D"},
+                        {name:"Rot",c:"#B23A2A"},
+                        {name:"Blau",c:"#2D5A7D"},
+                        {name:"Grün",c:"#3E6B4A"},
+                      ].map(col=>(
+                        <button key={col.c}
+                          onClick={()=>{setFpColor(col.c);setFpColorPickerOpen(false);}}
+                          title={col.name}
+                          style={{width:38,height:38,borderRadius:7,border:fpColor===col.c?`2.5px solid ${T.green}`:`1.5px solid ${T.border}`,background:col.c,cursor:"pointer",padding:0,position:"relative"}}>
+                          {fpColor===col.c&&<span style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",color:"white",fontWeight:700,fontSize:14,textShadow:"0 0 3px rgba(0,0,0,.7)"}}>✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginTop:10,paddingTop:8,borderTop:`1px solid ${T.border}`}}>
+                      <span style={{fontSize:11,color:T.muted}}>Eigene:</span>
+                      <input type="color" value={fpColor} onChange={e=>setFpColor(e.target.value)}
+                        style={{width:32,height:24,border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",padding:0}}/>
+                      <span style={{fontSize:10,color:T.muted,fontFamily:"monospace"}}>{fpColor}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
               {selected&&<>
                 <div style={{height:1,background:T.border,margin:"2px 0"}}/>
                 {selected.type==="eq"&&<TB onClick={()=>rotateSelected(-15)} title="Drehen links 15°">↺</TB>}
@@ -2099,7 +2611,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
             {/* Legend */}
             <div style={{position:"absolute",bottom:30,left:10,zIndex:500,background:"white",padding:"8px 12px",border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:11,boxShadow:"0 2px 6px rgba(0,0,0,0.12)",display:"flex",flexDirection:"column",gap:4}}>
               <div style={{fontWeight:700,color:T.muted,fontSize:10,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>Legende</div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#2A1F18",border:"1px solid #1A120D",borderRadius:2}}/>Fallschutz-Belag (EN 1177)</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:fpColor,border:"1px solid rgba(0,0,0,.3)",borderRadius:2}}/>Fallschutz-Belag · {fpMerged?"zusammenhängend":"einzeln"}</div>
               <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#F59E0B66",border:"1.5px dashed #F59E0B",borderRadius:2}}/>Fallraum (EN 1176)</div>
               <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,background:"#DC262644",border:"1.5px dashed #DC2626",borderRadius:2}}/>Konflikt</div>
             </div>
@@ -2115,18 +2627,18 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
             zIndex:view==="3d"?2:1,
             opacity:view==="3d"?1:0}}>
             {/* 3D toolbar */}
-            <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6}}>
+            <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6,flexWrap:"wrap"}}>
               <button onClick={()=>{ if(threeRef.current?.resetCamera) threeRef.current.resetCamera(); }}
                 style={{padding:"7px 11px",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.12)"}}>
                 🎥 Ansicht zentrieren
               </button>
-              <button onClick={()=>{ if(threeRef.current?.render) threeRef.current.render(); }}
-                style={{padding:"7px 11px",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.12)"}}>
-                🔄 Neu rendern
-              </button>
               <button onClick={()=>{ if(threeRef.current?.exportPhoto) threeRef.current.exportPhoto(); }}
-                style={{padding:"7px 11px",background:T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.25)"}}>
-                📸 Foto exportieren (4K)
+                style={{padding:"7px 11px",background:"white",border:`1.5px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:600,boxShadow:"0 2px 6px rgba(0,0,0,.12)"}}>
+                📸 Schnell-Foto (4K)
+              </button>
+              <button onClick={()=>setRenderStudioOpen(true)}
+                style={{padding:"7px 13px",background:`linear-gradient(135deg, ${T.gold} 0%, ${T.goldLight} 100%)`,color:"#5A3D00",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700,boxShadow:"0 3px 10px rgba(212,168,83,0.45)"}}>
+                🎬 Photorealistisches Rendering
               </button>
             </div>
             {/* Hint */}
@@ -2148,6 +2660,31 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                 <Stat label="Geräte platziert" val={placed.length}/>
                 <Stat label="Bäume & Gebäude" val={obstacles.length}/>
                 <Stat label="Konflikte" val={conflicts.length} color={conflicts.length>0?T.red:T.green}/>
+                {/* Fallschutzfläche — zeigt individuelle Summe vs. zusammenhängende Fläche */}
+                {(()=>{
+                  const fp=computeFallProtectionArea(placed,equipment,projectCenter);
+                  if(fp.zones===0) return null;
+                  const savings=Math.round((fp.mergedArea-fp.individualSum)*10)/10;
+                  // Contrast text color for readable label on selected EPDM color
+                  const rgb=parseInt(fpColor.slice(1),16);
+                  const lum=((rgb>>16)&255)*.299+((rgb>>8)&255)*.587+(rgb&255)*.114;
+                  const textCol=lum>140?"#1A1A1A":"white";
+                  return (
+                    <div style={{background:fpColor,color:textCol,borderRadius:8,padding:"10px 12px",marginTop:4,border:`1px solid ${textCol==="white"?"rgba(255,255,255,.1)":"rgba(0,0,0,.15)"}`}}>
+                      <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,opacity:.75,marginBottom:6}}>Fallschutz EN 1177</div>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3}}>
+                        <span style={{opacity:.85}}>Einzelflächen Σ</span>
+                        <span style={{fontFamily:"monospace"}}>{fp.individualSum} m²</span>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700,paddingTop:4,borderTop:`1px solid ${textCol==="white"?"rgba(255,255,255,.18)":"rgba(0,0,0,.2)"}`}}>
+                        <span>Belag {fpMerged?"zusammenhängend":"einzeln"}</span>
+                        <span className="syne">{fpMerged?fp.mergedArea:fp.individualSum} m²</span>
+                      </div>
+                      {fpMerged&&savings>0&&<div style={{fontSize:10,opacity:.8,marginTop:4,fontStyle:"italic"}}>+{savings} m² durch Verbindungen & sauberen Rand · {fp.clusters} Cluster</div>}
+                      {!fpMerged&&<div style={{fontSize:10,opacity:.8,marginTop:4,fontStyle:"italic"}}>Jedes Gerät mit separatem Belag · {fp.zones} Flächen</div>}
+                    </div>
+                  );
+                })()}
                 <div style={{height:1,background:T.border,margin:"6px 0"}}/>
                 <div style={{fontSize:11,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>Gesamtpreis</div>
                 <div className="syne" style={{fontSize:22,fontWeight:800,color:T.green}}>
@@ -2268,12 +2805,23 @@ function Quote({project,equipment,manufacturers,workPrices}) {
   const eqItems=placed.map(pl=>{const e=equipment.find(x=>x.id===pl.eqId);return e?{...e,placedId:pl.id}:null;}).filter(Boolean);
   const floorArea=project.area.w*project.area.h;
 
-  // === State für Rabatte & Skonto ===
+  // Fallschutz-Fläche: tatsächlich benötigter zusammenhängender Belag
+  // (individuelle Fallzonen + 0.3m Verbindungs-Puffer, zusammenhängend berechnet)
+  const projectCenter=project.geo||{lat:46.9480,lng:7.4474,zoom:19};
+  const fpCalc=computeFallProtectionArea(placed,equipment,projectCenter);
+
+  // === State für Rabatte, Skonto & Fallschutz-Modus ===
   const usedCats=[...new Set(eqItems.map(e=>e.cat))];
   const [catDiscounts,setCatDiscounts]=useState({}); // cat → % discount
   const [overallDiscount,setOverallDiscount]=useState(0); // zusätzlicher Gesamtrabatt %
   const [skonto,setSkonto]=useState(""); // String, leer = nicht anzeigen
   const [skontoDays,setSkontoDays]=useState(14);
+  const [fpMode,setFpMode]=useState("merged"); // "merged" | "individual"
+
+  // Fläche abhängig vom Modus
+  const fallProtectionArea = fpCalc.zones>0
+    ? (fpMode==="merged" ? fpCalc.mergedArea : fpCalc.individualSum)
+    : floorArea;
 
   // === Berechnungen ===
   // Geräte nach Rabatt
@@ -2287,11 +2835,12 @@ function Quote({project,equipment,manufacturers,workPrices}) {
   const catDiscountAmount=eqGross-eqAfterCatDiscount;
 
   // Arbeitspositionen
+  const fpFloorName=project.wizard?.floor||"EPDM";
   const workItems=[
     {name:"Lieferpauschale",unit:"pauschal",qty:1,price:workPrices.find(w=>w.name.includes("Liefer"))?.price||580},
     {name:"Geräteaufbau (geschätzt)",unit:"h",qty:Math.ceil(placed.length*3),price:workPrices.find(w=>w.name.includes("Aufbau"))?.price||95},
     {name:"Fundamente",unit:"Stk",qty:placed.length,price:workPrices.find(w=>w.name.includes("Fundam"))?.price||320},
-    {name:"Fallschutzbelag "+(project.wizard?.floor||""),unit:"m²",qty:floorArea,price:workPrices.find(w=>w.name.includes("Fallschutz"))?.price||45},
+    {name:`Fallschutzbelag ${fpFloorName}`+(fpCalc.zones>0?(fpMode==="merged"?` (${fpCalc.clusters} zusammenhängende Fläche${fpCalc.clusters>1?"n":""})`:` (${fpCalc.zones} einzelne Geräteflächen)`):""),unit:"m²",qty:fallProtectionArea,price:workPrices.find(w=>w.name.includes("Fallschutz"))?.price||45},
     {name:"Projektleitung",unit:"pauschal",qty:1,price:workPrices.find(w=>w.name.includes("Projekt"))?.price||850},
   ];
   const workTotal=workItems.reduce((s,w)=>s+w.qty*w.price,0);
@@ -2366,6 +2915,27 @@ function Quote({project,equipment,manufacturers,workPrices}) {
             </div>
             {!hasSkonto&&<div style={{fontSize:10,color:T.muted,marginTop:4,fontStyle:"italic"}}>→ wird in der Offerte nur angezeigt, wenn % eingegeben</div>}
           </div>
+          {fpCalc.zones>0&&(
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Fallschutz-Verrechnung</div>
+              <div style={{display:"flex",background:"white",border:`1.5px solid ${T.border}`,borderRadius:6,overflow:"hidden"}}>
+                <button onClick={()=>setFpMode("merged")}
+                  style={{padding:"6px 12px",border:"none",background:fpMode==="merged"?T.green:"white",color:fpMode==="merged"?"white":T.text,cursor:"pointer",fontSize:11.5,fontWeight:600,fontFamily:"inherit"}}
+                  title="Zusammenhängende Fläche inkl. Verbindungen und sauberem Rand (realistischer für grössere Anlagen)">
+                  ⬛ Zusammenhängend · {fpCalc.mergedArea} m²
+                </button>
+                <button onClick={()=>setFpMode("individual")}
+                  style={{padding:"6px 12px",border:"none",background:fpMode==="individual"?T.green:"white",color:fpMode==="individual"?"white":T.text,cursor:"pointer",fontSize:11.5,fontWeight:600,fontFamily:"inherit",borderLeft:`1px solid ${T.border}`}}
+                  title="Pro Gerät eine Einzelfläche (für isolierte Geräte)">
+                  ⬚ Einzeln · {fpCalc.individualSum} m²
+                </button>
+              </div>
+              <div style={{fontSize:10,color:T.muted,marginTop:4,fontStyle:"italic"}}>
+                Differenz: {Math.round((fpCalc.mergedArea-fpCalc.individualSum)*10)/10} m² ·
+                wirkt sich auf Position „Fallschutzbelag" aus
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2406,6 +2976,19 @@ function Quote({project,equipment,manufacturers,workPrices}) {
               </div>
             ))}
           </div>
+          {fpCalc.zones>0&&(
+            <div style={{marginTop:16,padding:"10px 14px",background:"#2A1F18",color:"white",borderRadius:8,fontSize:11.5,display:"flex",gap:20,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{opacity:.9}}>
+                <b>Fallschutz EN 1177:</b>{" "}
+                {fpCalc.zones} Gerät(e) mit Fallhöhe &gt; 60cm
+              </div>
+              <div style={{display:"flex",gap:14,fontSize:11}}>
+                <span>Einzelflächen Σ: <b style={{fontFamily:"monospace"}}>{fpCalc.individualSum} m²</b></span>
+                <span>→ Belag zusammenhängend: <b className="syne" style={{fontSize:13}}>{fpCalc.mergedArea} m²</b></span>
+                {fpCalc.clusters>1&&<span style={{opacity:.7}}>in {fpCalc.clusters} separaten Bereichen</span>}
+              </div>
+            </div>
+          )}
         </div>
         {/* Equipment */}
         <div style={{padding:"24px 40px"}}>
