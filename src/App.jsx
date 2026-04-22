@@ -678,12 +678,20 @@ function Manufacturers({manufacturers,setManufacturers}) {
 /* ═══════════════════════════ WORK PRICES ═══════════════════════════ */
 function WorkPrices({workPrices,setWorkPrices}) {
   const [form,setForm]=useState({name:"",unit:"h",price:0});
+  const [editing,setEditing]=useState(null); // { id, field }
+
+  function update(id,field,val){
+    setWorkPrices(p=>p.map(w=>w.id===id?{...w,[field]:field==="price"?Number(val):val}:w));
+  }
+  const inputSt={width:"100%",padding:"5px 8px",border:`1px solid ${T.border}`,borderRadius:5,fontSize:13,fontFamily:"inherit",background:T.bg,outline:"none",boxSizing:"border-box"};
+  const cellSt={padding:"8px 6px",verticalAlign:"middle"};
+
   return (
     <div className="fade-in">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div className="syne" style={{fontSize:24,fontWeight:800}}>Arbeitspreise</div><div style={{color:T.muted,fontSize:13}}>Montage & Aufbaukosten</div></div>
+        <div><div className="syne" style={{fontSize:24,fontWeight:800}}>Arbeitspreise</div><div style={{color:T.muted,fontSize:13}}>Montage- & Aufbaukosten — Klick in Feld zum Bearbeiten</div></div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+      <div style={{display:"grid",gridTemplateColumns:"1.6fr 1fr",gap:20}}>
         <Card>
           <div className="syne" style={{fontWeight:700,marginBottom:14}}>Preisliste</div>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
@@ -693,12 +701,31 @@ function WorkPrices({workPrices,setWorkPrices}) {
             <tbody>
               {workPrices.map(w=>(
                 <tr key={w.id} style={{borderBottom:`1px solid ${T.border}`}}>
-                  <td style={{padding:"10px 6px",fontWeight:600}}>{w.name}</td>
-                  <td style={{padding:"10px 6px",color:T.muted}}>{w.unit}</td>
-                  <td style={{padding:"10px 6px"}}><span className="syne" style={{fontWeight:700,color:T.green}}>{fmt(w.price)}</span></td>
-                  <td style={{padding:"10px 6px"}}><button onClick={()=>setWorkPrices(p=>p.filter(x=>x.id!==w.id))} style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:14}}>🗑️</button></td>
+                  {/* Name */}
+                  <td style={cellSt}>
+                    <input value={w.name} onChange={e=>update(w.id,"name",e.target.value)} style={{...inputSt,fontWeight:600}}/>
+                  </td>
+                  {/* Unit */}
+                  <td style={{...cellSt,width:110}}>
+                    <select value={w.unit} onChange={e=>update(w.id,"unit",e.target.value)} style={{...inputSt,cursor:"pointer"}}>
+                      {["h","m²","m³","m","pauschal","Stk","Tag"].map(u=><option key={u}>{u}</option>)}
+                    </select>
+                  </td>
+                  {/* Price */}
+                  <td style={{...cellSt,width:120}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <input type="number" value={w.price} onChange={e=>update(w.id,"price",e.target.value)}
+                        style={{...inputSt,textAlign:"right",fontWeight:700,color:T.green}}/>
+                      <span style={{fontSize:11,color:T.muted}}>CHF</span>
+                    </div>
+                  </td>
+                  {/* Delete */}
+                  <td style={{...cellSt,width:30,textAlign:"center"}}>
+                    <button onClick={()=>setWorkPrices(p=>p.filter(x=>x.id!==w.id))} style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:14}} title="Löschen">🗑️</button>
+                  </td>
                 </tr>
               ))}
+              {workPrices.length===0&&<tr><td colSpan={4} style={{padding:20,textAlign:"center",color:T.muted,fontSize:12}}>Keine Positionen — rechts neue hinzufügen</td></tr>}
             </tbody>
           </table>
         </Card>
@@ -706,9 +733,12 @@ function WorkPrices({workPrices,setWorkPrices}) {
           <div className="syne" style={{fontWeight:700,marginBottom:14}}>Neue Position</div>
           <div style={{display:"grid",gap:12}}>
             <Input label="Leistungsbezeichnung" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))}/>
-            <Select label="Einheit" value={form.unit} onChange={v=>setForm(f=>({...f,unit:v}))} options={["h","m²","m³","m","pauschal","Stk"]}/>
+            <Select label="Einheit" value={form.unit} onChange={v=>setForm(f=>({...f,unit:v}))} options={["h","m²","m³","m","pauschal","Stk","Tag"]}/>
             <Input label="Preis (CHF)" type="number" value={form.price} onChange={v=>setForm(f=>({...f,price:Number(v)}))}/>
-            <Btn onClick={()=>{if(form.name)setWorkPrices(p=>[...p,{...form,id:Date.now()}]);}}>+ Hinzufügen</Btn>
+            <Btn onClick={()=>{if(form.name){setWorkPrices(p=>[...p,{...form,id:Date.now()}]);setForm({name:"",unit:"h",price:0});}}}>+ Hinzufügen</Btn>
+            <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginTop:8,padding:"10px 12px",background:T.bg,borderRadius:8}}>
+              💡 <b>Tipp:</b> Alle Felder in der Preisliste lassen sich direkt bearbeiten — einfach reinklicken und den Wert ändern. Änderungen wirken sich sofort auf alle Offerten aus.
+            </div>
           </div>
         </Card>
       </div>
@@ -1075,11 +1105,23 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
-  // Invalidate size when switching to 2D view (tiles may render wrong otherwise)
+  // View-change: resize renderer and map correctly (this was the 3D-sticky bug)
   useEffect(()=>{
-    if(view==="2d"&&mapRef.current){
-      setTimeout(()=>{ mapRef.current && mapRef.current.invalidateSize(); },50);
-    }
+    // Small delay so CSS display-toggle has taken effect before we query sizes
+    const t=setTimeout(()=>{
+      if(view==="2d"&&mapRef.current){
+        mapRef.current.invalidateSize();
+      }
+      if(view==="3d"&&threeRef.current&&threeContainerRef.current){
+        const { renderer, camera } = threeRef.current;
+        const c=threeContainerRef.current;
+        const w=c.clientWidth||800, h=c.clientHeight||500;
+        renderer.setSize(w,h);
+        camera.aspect=w/h; camera.updateProjectionMatrix();
+        threeRef.current.render();
+      }
+    },80);
+    return ()=>clearTimeout(t);
   },[view]);
 
   // Switch tile layer
@@ -1502,6 +1544,8 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
 
     function animate(){
       animRef.current=requestAnimationFrame(animate);
+      // Skip render when container hidden (saves GPU, avoids compositor glitches)
+      if(container.offsetParent===null||container.clientWidth===0) return;
       renderer.render(scene,camera);
     }
     animate();
@@ -1976,7 +2020,11 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         {/* CENTER – Map / 3D */}
         <div style={{flex:1,background:"white",border:`1px solid ${T.border}`,borderRadius:12,position:"relative",overflow:"hidden",boxShadow:T.shadow}}>
           {/* === 2D MAP VIEW (always in DOM, hidden when 3D active) === */}
-          <div style={{position:"absolute",inset:0,display:view==="2d"?"block":"none"}}>
+          <div style={{position:"absolute",inset:0,
+            visibility:view==="2d"?"visible":"hidden",
+            pointerEvents:view==="2d"?"auto":"none",
+            zIndex:view==="2d"?2:1,
+            opacity:view==="2d"?1:0}}>
             {/* Address search + map style switcher */}
             <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6,flexWrap:"wrap"}}>
               <div style={{display:"flex",background:"white",borderRadius:8,border:`1.5px solid ${T.border}`,overflow:"hidden",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
@@ -2046,7 +2094,11 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           </div>
 
           {/* === 3D VIEW (always in DOM, hidden when 2D active) === */}
-          <div style={{position:"absolute",inset:0,display:view==="3d"?"block":"none"}}>
+          <div style={{position:"absolute",inset:0,
+            visibility:view==="3d"?"visible":"hidden",
+            pointerEvents:view==="3d"?"auto":"none",
+            zIndex:view==="3d"?2:1,
+            opacity:view==="3d"?1:0}}>
             {/* 3D toolbar */}
             <div style={{position:"absolute",top:10,left:10,zIndex:500,display:"flex",gap:6}}>
               <button onClick={()=>{ if(threeRef.current?.resetCamera) threeRef.current.resetCamera(); }}
@@ -2199,27 +2251,109 @@ function Kv({label,val}){
 function Quote({project,equipment,manufacturers,workPrices}) {
   const placed=project.placed||[];
   const eqItems=placed.map(pl=>{const e=equipment.find(x=>x.id===pl.eqId);return e?{...e,placedId:pl.id}:null;}).filter(Boolean);
-  const eqTotal=eqItems.reduce((s,e)=>s+e.price,0);
   const floorArea=project.area.w*project.area.h;
+
+  // === State für Rabatte & Skonto ===
+  const usedCats=[...new Set(eqItems.map(e=>e.cat))];
+  const [catDiscounts,setCatDiscounts]=useState({}); // cat → % discount
+  const [overallDiscount,setOverallDiscount]=useState(0); // zusätzlicher Gesamtrabatt %
+  const [skonto,setSkonto]=useState(""); // String, leer = nicht anzeigen
+  const [skontoDays,setSkontoDays]=useState(14);
+
+  // === Berechnungen ===
+  // Geräte nach Rabatt
+  const eqWithDiscount=eqItems.map(e=>{
+    const pct=Number(catDiscounts[e.cat]||0);
+    const discountedPrice=e.price*(1-pct/100);
+    return {...e,origPrice:e.price,discountedPrice,discountPct:pct};
+  });
+  const eqGross=eqItems.reduce((s,e)=>s+e.price,0);
+  const eqAfterCatDiscount=eqWithDiscount.reduce((s,e)=>s+e.discountedPrice,0);
+  const catDiscountAmount=eqGross-eqAfterCatDiscount;
+
+  // Arbeitspositionen
   const workItems=[
     {name:"Lieferpauschale",unit:"pauschal",qty:1,price:workPrices.find(w=>w.name.includes("Liefer"))?.price||580},
     {name:"Geräteaufbau (geschätzt)",unit:"h",qty:Math.ceil(placed.length*3),price:workPrices.find(w=>w.name.includes("Aufbau"))?.price||95},
     {name:"Fundamente",unit:"Stk",qty:placed.length,price:workPrices.find(w=>w.name.includes("Fundam"))?.price||320},
-    {name:"Fallschutzbelag "+project.wizard?.floor,unit:"m²",qty:floorArea,price:45},
+    {name:"Fallschutzbelag "+(project.wizard?.floor||""),unit:"m²",qty:floorArea,price:workPrices.find(w=>w.name.includes("Fallschutz"))?.price||45},
     {name:"Projektleitung",unit:"pauschal",qty:1,price:workPrices.find(w=>w.name.includes("Projekt"))?.price||850},
   ];
   const workTotal=workItems.reduce((s,w)=>s+w.qty*w.price,0);
-  const subtotal=eqTotal+workTotal;
+
+  // Gesamtrabatt auf Zwischensumme (Geräte + Arbeit)
+  const afterCatDiscount=eqAfterCatDiscount+workTotal;
+  const overallDiscountAmount=afterCatDiscount*(Number(overallDiscount)/100);
+  const subtotal=afterCatDiscount-overallDiscountAmount;
   const vat=subtotal*.081;
   const total=subtotal+vat;
+
+  // Skonto (nur wenn eingegeben)
+  const skontoPct=Number(skonto)||0;
+  const hasSkonto=skontoPct>0;
+  const skontoAmount=hasSkonto?total*(skontoPct/100):0;
+  const skontoTotal=total-skontoAmount;
+
   const today=new Date().toLocaleDateString("de-CH",{year:"numeric",month:"long",day:"numeric"});
   const validTil=new Date(Date.now()+60*86400000).toLocaleDateString("de-CH",{year:"numeric",month:"long",day:"numeric"});
+
+  const inlineInput={
+    padding:"3px 6px",border:`1px solid ${T.border}`,borderRadius:4,fontSize:12,fontFamily:"inherit",
+    width:50,textAlign:"right",background:"white",outline:"none",
+  };
+
   return (
     <div className="fade-in">
       <div className="no-print" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div className="syne" style={{fontSize:24,fontWeight:800}}>Offerte</div><div style={{color:T.muted,fontSize:13}}>Drucken oder als PDF speichern</div></div>
+        <div><div className="syne" style={{fontSize:24,fontWeight:800}}>Offerte</div><div style={{color:T.muted,fontSize:13}}>Drucken oder als PDF speichern — Rabatte und Skonto sind live-editierbar</div></div>
         <Btn variant="gold" onClick={()=>window.print()}>🖨️ Drucken / PDF</Btn>
       </div>
+
+      {/* ════ RABATT-STEUERUNG (nicht in Druck) ════ */}
+      <div className="no-print" style={{maxWidth:860,margin:"0 auto 16px",background:T.bg,border:`1.5px solid ${T.border}`,borderRadius:12,padding:"14px 20px"}}>
+        <div style={{display:"flex",gap:24,flexWrap:"wrap",alignItems:"flex-start"}}>
+          <div style={{flex:1,minWidth:280}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Rabatt pro Kategorie</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {usedCats.map(c=>(
+                <div key={c} style={{display:"flex",alignItems:"center",gap:5,background:"white",border:`1px solid ${T.border}`,borderRadius:6,padding:"4px 8px"}}>
+                  <span style={{fontSize:12,fontWeight:600}}>{ICONS[c]} {c}</span>
+                  <input type="number" min="0" max="100" step="1" value={catDiscounts[c]||""}
+                    onChange={e=>setCatDiscounts(d=>({...d,[c]:e.target.value}))}
+                    placeholder="0" style={{...inlineInput,width:48}}/>
+                  <span style={{fontSize:12,color:T.muted}}>%</span>
+                </div>
+              ))}
+              {usedCats.length===0&&<span style={{fontSize:12,color:T.muted,fontStyle:"italic"}}>Keine Geräte platziert</span>}
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Gesamtrabatt</div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <input type="number" min="0" max="100" step="0.5" value={overallDiscount||""}
+                onChange={e=>setOverallDiscount(e.target.value)}
+                placeholder="0" style={{...inlineInput,width:65}}/>
+              <span style={{fontSize:12,color:T.muted}}>%</span>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Skontoabzug (optional)</div>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <input type="number" min="0" max="10" step="0.5" value={skonto}
+                onChange={e=>setSkonto(e.target.value)}
+                placeholder="— %"
+                style={{...inlineInput,width:70,color:hasSkonto?T.green:T.muted,fontWeight:hasSkonto?700:400}}/>
+              <span style={{fontSize:12,color:T.muted}}>% bei Zahlung binnen</span>
+              <input type="number" min="1" max="90" step="1" value={skontoDays}
+                onChange={e=>setSkontoDays(Number(e.target.value))}
+                style={{...inlineInput,width:50}}/>
+              <span style={{fontSize:12,color:T.muted}}>Tagen</span>
+            </div>
+            {!hasSkonto&&<div style={{fontSize:10,color:T.muted,marginTop:4,fontStyle:"italic"}}>→ wird in der Offerte nur angezeigt, wenn % eingegeben</div>}
+          </div>
+        </div>
+      </div>
+
       <div style={{background:"white",borderRadius:16,overflow:"hidden",boxShadow:"0 4px 30px rgba(0,0,0,.1)",maxWidth:860,margin:"0 auto"}}>
         {/* Header */}
         <div style={{background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`,color:"white",padding:"32px 40px"}}>
@@ -2253,7 +2387,7 @@ function Quote({project,equipment,manufacturers,workPrices}) {
             {[["Fläche",`${project.area.w}×${project.area.h} m (${floorArea} m²)`],["Altersgruppen",(project.wizard?.ages||[]).join(", ")||"—"],["Material",project.wizard?.mat],["Fallschutz",project.wizard?.floor]].map(([k,v])=>(
               <div key={k} style={{minWidth:140}}>
                 <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:2}}>{k}</div>
-                <div style={{fontSize:13,fontWeight:600}}>{v}</div>
+                <div style={{fontSize:13,fontWeight:600}}>{v||"—"}</div>
               </div>
             ))}
           </div>
@@ -2264,30 +2398,33 @@ function Quote({project,equipment,manufacturers,workPrices}) {
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
             <thead>
               <tr style={{background:T.bg}}>
-                {["Pos","Gerät","Kategorie","Material","Hersteller","Preis CHF"].map(h=>(
-                  <th key={h} style={{padding:"10px 12px",textAlign:h==="Preis CHF"?"right":"left",fontSize:11,fontWeight:700,textTransform:"uppercase",color:T.muted,letterSpacing:.5}}>{h}</th>
+                {["Pos","Gerät","Kategorie","Material","Hersteller","Preis","Rabatt","Netto CHF"].map(h=>(
+                  <th key={h} style={{padding:"10px 8px",textAlign:["Preis","Rabatt","Netto CHF"].includes(h)?"right":"left",fontSize:10.5,fontWeight:700,textTransform:"uppercase",color:T.muted,letterSpacing:.5}}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {eqItems.map((e,i)=>(
+              {eqWithDiscount.map((e,i)=>(
                 <tr key={e.placedId} style={{borderBottom:`1px solid ${T.border}`}}>
-                  <td style={{padding:"12px",color:T.muted,fontSize:12}}>{i+1}</td>
-                  <td style={{padding:"12px"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <div style={{width:34,height:34,borderRadius:8,background:e.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{e.icon}</div>
-                      <div><div style={{fontWeight:600}}>{e.name}</div><div style={{fontSize:11,color:T.muted}}>{e.desc?.slice(0,60)}…</div></div>
+                  <td style={{padding:"10px 8px",color:T.muted,fontSize:12}}>{i+1}</td>
+                  <td style={{padding:"10px 8px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{width:30,height:30,borderRadius:7,background:e.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{e.icon}</div>
+                      <div><div style={{fontWeight:600,fontSize:12.5}}>{e.name}</div>{e.artNr&&<div style={{fontSize:10,color:T.muted,fontFamily:"monospace"}}>{e.artNr}</div>}</div>
                     </div>
                   </td>
-                  <td style={{padding:"12px"}}><Badge color={e.color}>{e.cat}</Badge></td>
-                  <td style={{padding:"12px",color:T.muted,fontSize:12}}>{e.mat}</td>
-                  <td style={{padding:"12px",color:T.muted,fontSize:12}}>{manufacturers.find(m=>m.id===e.mfr)?.name||"—"}</td>
-                  <td style={{padding:"12px",textAlign:"right"}}><span className="syne" style={{fontWeight:700}}>{fmt(e.price)}</span></td>
+                  <td style={{padding:"10px 8px"}}><Badge color={e.color}>{e.cat}</Badge></td>
+                  <td style={{padding:"10px 8px",color:T.muted,fontSize:12}}>{e.mat}</td>
+                  <td style={{padding:"10px 8px",color:T.muted,fontSize:12}}>{manufacturers.find(m=>m.id===e.mfr)?.name||"—"}</td>
+                  <td style={{padding:"10px 8px",textAlign:"right",fontSize:12,color:e.discountPct>0?T.muted:"inherit",textDecoration:e.discountPct>0?"line-through":"none"}}>{fmt(e.origPrice)}</td>
+                  <td style={{padding:"10px 8px",textAlign:"right",fontSize:12,color:e.discountPct>0?T.red:T.muted}}>{e.discountPct>0?`−${e.discountPct}%`:"—"}</td>
+                  <td style={{padding:"10px 8px",textAlign:"right"}}><span className="syne" style={{fontWeight:700}}>{fmt(e.discountedPrice)}</span></td>
                 </tr>
               ))}
+              {eqItems.length===0&&<tr><td colSpan={8} style={{padding:20,textAlign:"center",color:T.muted,fontSize:12}}>Keine Geräte platziert</td></tr>}
               <tr style={{background:"#F8FDF9"}}>
-                <td colSpan={5} style={{padding:"12px",fontWeight:700,color:T.green}}>Geräte-Zwischentotal</td>
-                <td style={{padding:"12px",textAlign:"right"}}><span className="syne" style={{fontWeight:800,color:T.green,fontSize:16}}>{fmt(eqTotal)}</span></td>
+                <td colSpan={7} style={{padding:"12px",fontWeight:700,color:T.green}}>Geräte-Zwischentotal</td>
+                <td style={{padding:"12px",textAlign:"right"}}><span className="syne" style={{fontWeight:800,color:T.green,fontSize:16}}>{fmt(eqAfterCatDiscount)}</span></td>
               </tr>
             </tbody>
           </table>
@@ -2325,16 +2462,45 @@ function Quote({project,equipment,manufacturers,workPrices}) {
         <div style={{padding:"0 40px 32px"}}>
           <div style={{background:`linear-gradient(135deg, #F8FDF9, #EBF7EF)`,borderRadius:12,padding:"20px 24px",border:`1px solid ${T.greenLight}30`}}>
             <div style={{display:"flex",justifyContent:"flex-end"}}>
-              <div style={{width:300}}>
-                {[["Zwischentotal",fmt(subtotal)],["MWST 8.1%",fmt(vat)]].map(([k,v])=>(
-                  <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${T.border}`,fontSize:13}}>
-                    <span style={{color:T.muted}}>{k}</span><span>{v}</span>
+              <div style={{width:340}}>
+                {catDiscountAmount>0&&(
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",fontSize:12.5,color:T.red}}>
+                    <span>Kategorie-Rabatte</span><span>−{fmt(catDiscountAmount)}</span>
                   </div>
-                ))}
+                )}
+                <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",fontSize:13}}>
+                  <span style={{color:T.muted}}>Zwischentotal (Geräte + Montage)</span><span>{fmt(afterCatDiscount)}</span>
+                </div>
+                {overallDiscountAmount>0&&(
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",fontSize:12.5,color:T.red}}>
+                    <span>Gesamtrabatt ({overallDiscount}%)</span><span>−{fmt(overallDiscountAmount)}</span>
+                  </div>
+                )}
+                <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:`1px solid ${T.border}`,borderBottom:`1px solid ${T.border}`,fontSize:13,fontWeight:600}}>
+                  <span>Netto</span><span>{fmt(subtotal)}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${T.border}`,fontSize:13}}>
+                  <span style={{color:T.muted}}>MWST 8.1%</span><span>{fmt(vat)}</span>
+                </div>
                 <div style={{display:"flex",justifyContent:"space-between",padding:"14px 0 0",alignItems:"center"}}>
                   <span className="syne" style={{fontWeight:800,fontSize:16}}>TOTAL CHF</span>
                   <span className="syne" style={{fontWeight:800,fontSize:24,color:T.green}}>{fmt(total)}</span>
                 </div>
+
+                {/* Skonto block - only shown when value entered */}
+                {hasSkonto&&(
+                  <div style={{marginTop:16,padding:"14px",background:"white",border:`1.5px solid ${T.gold}66`,borderRadius:10}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"#8B6914",textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Zahlungsbonus</div>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5}}>
+                      <span>Bei Zahlung binnen {skontoDays} Tagen:</span>
+                      <span style={{color:T.red,fontWeight:600}}>−{skontoPct}% Skonto (−{fmt(skontoAmount)})</span>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",marginTop:8,paddingTop:8,borderTop:`1px dashed ${T.border}`,alignItems:"baseline"}}>
+                      <span className="syne" style={{fontWeight:700,fontSize:14,color:"#8B6914"}}>Skonto-Betrag CHF</span>
+                      <span className="syne" style={{fontWeight:800,fontSize:20,color:"#8B6914"}}>{fmt(skontoTotal)}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2350,7 +2516,7 @@ function Quote({project,equipment,manufacturers,workPrices}) {
         )}
         {/* Footer */}
         <div style={{background:T.bg,padding:"20px 40px",borderTop:`1px solid ${T.border}`,fontSize:11,color:T.muted,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
-          <div>Preise exkl. MWST · Alle Geräte nach EN 1176/1177 · Lieferung ab Werk<br/>Diese Offerte ist {60} Tage gültig ab Ausstellungsdatum.</div>
+          <div>Preise exkl. MWST · Alle Geräte nach EN 1176/1177 · Lieferung ab Werk<br/>Diese Offerte ist 60 Tage gültig ab Ausstellungsdatum{hasSkonto?` · ${skontoPct}% Skonto bei Zahlung binnen ${skontoDays} Tagen`:""}.</div>
           <div style={{textAlign:"right"}}>PlayQuote GmbH · info@playquote.ch<br/>www.playquote.ch · CHE-123.456.789</div>
         </div>
       </div>
