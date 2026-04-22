@@ -48,18 +48,6 @@ const CAT_COLORS = { Schaukeln:"#3B82F6",Rutschen:"#EF4444",Klettern:"#8B5CF6",S
 const DYNAMIC_CATS = ["Schaukeln","Wipptiere","Karussell","Rutschen"];
 
 const initEquipment = [
-  // ── Generische Platzhalter ─────────────────────────────────────────────────
-  { id:1,  name:"Doppelschaukel Robinie",   cat:"Schaukeln",   age:"Schulkinder (6–12)",  mat:"Robinie",           mfr:1, price:2850,  fallZone:2.5, size:[3.0,0.8], color:"#3B82F6", icon:"🏗", desc:"Klassische Doppelschaukel, 2 Sitze, Rahmen Robinie" },
-  { id:2,  name:"Röhrenrutsche 3m",         cat:"Rutschen",    age:"Schulkinder (6–12)",  mat:"Edelstahl",         mfr:2, price:4200,  fallZone:2.0, size:[4.0,1.2], color:"#EF4444", icon:"🛝", desc:"Geschlossene Röhrenrutsche 3m, Edelstahlrutschbahn" },
-  { id:3,  name:"Kletterpyramide Holz",     cat:"Klettern",    age:"Altersgemischt",      mat:"KDI",               mfr:1, price:5600,  fallZone:1.5, size:[3.5,3.5], color:"#8B5CF6", icon:"🧗", desc:"Kletterpyramide aus druckimprägniertem Holz, 4m hoch" },
-  { id:4,  name:"Sandkasten XL",            cat:"Sandspiel",   age:"Kleinkinder (1–3)",   mat:"Robinie",           mfr:3, price:890,   fallZone:0,   size:[3.0,3.0], color:"#F59E0B", icon:"🏖", desc:"Grosser Sandkasten mit Abdeckung, Sitzkanten Robinie" },
-  { id:5,  name:"Federwipptier Elefant",    cat:"Wipptiere",   age:"Kleinkinder (1–3)",   mat:"Pulverbeschichtet", mfr:2, price:680,   fallZone:1.5, size:[1.2,0.8], color:"#10B981", icon:"🐴", desc:"Federwipptier Elefant, pulverbeschichtet, Sicherheitsfeder" },
-  { id:6,  name:"Karussell 2m",             cat:"Karussell",   age:"Kindergarten (3–6)",  mat:"Edelstahl",         mfr:2, price:3200,  fallZone:3.0, size:[2.2,2.2], color:"#EC4899", icon:"🎠", desc:"Drehteller Edelstahl, Ø 2m, Antirutschbelag" },
-  { id:7,  name:"Balancierbalken-Set",      cat:"Balancieren", age:"Kindergarten (3–6)",  mat:"Robinie",           mfr:3, price:1200,  fallZone:1.0, size:[5.0,1.0], color:"#6366F1", icon:"⚖️", desc:"Kombination aus 5 Balancierelementen Robinie" },
-  { id:8,  name:"Spielhaus Ritterkastell",  cat:"Spielhäuser", age:"Schulkinder (6–12)",  mat:"Douglasie",         mfr:1, price:8900,  fallZone:1.5, size:[4.5,4.0], color:"#D97706", icon:"🏠", desc:"Grosses Spielhaus 2-stöckig mit Rutsche und Kletter" },
-  { id:9,  name:"Wackelbrücke",             cat:"Balancieren", age:"Schulkinder (6–12)",  mat:"Robinie",           mfr:1, price:1850,  fallZone:1.5, size:[3.5,1.2], color:"#6366F1", icon:"⚖️", desc:"Hängebrücke mit Holzdielen und Stahlseilen" },
-  { id:10, name:"EPDM Fallschutz (m²)",     cat:"Fallschutz",  age:"Altersgemischt",      mat:"Edelstahl",         mfr:4, price:85,    fallZone:0,   size:[1.0,1.0], color:"#059669", icon:"🟩", desc:"EPDM Fallschutzbelag, diverse Farben, 4cm" },
-
   // ══════════════════════════════════════════════════════════════════════════
   // KOMPAN – freistehende Spielgeräte | Quelle: kompan.com/de/de
   // ══════════════════════════════════════════════════════════════════════════
@@ -215,7 +203,7 @@ const initProjects = [
     placed:[
       { id:"p1", eqId:102, lat:47.648810, lng:9.173490, rot:0 },
       { id:"p2", eqId:202, lat:47.648780, lng:9.173580, rot:0 },
-      { id:"p3", eqId:3,   lat:47.648760, lng:9.173400, rot:0 },
+      { id:"p3", eqId:501, lat:47.648760, lng:9.173400, rot:0 },
       { id:"p4", eqId:401, lat:47.648840, lng:9.173530, rot:0 },
     ],
     obstacles:[
@@ -939,6 +927,40 @@ function zonesOverlap(a, ea, b, eb) {
   return Math.sqrt(dx * dx + dy * dy) < ra + rb;
 }
 
+// Ray-casting Point-in-Polygon (lat/lng koordinaten)
+function pointInPolygon(lat, lng, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [lati, lngi] = poly[i];
+    const [latj, lngj] = poly[j];
+    const intersect = ((lati > lat) !== (latj > lat)) &&
+      (lng < (lngj - lngi) * (lat - lati) / (latj - lati) + lngi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// Prüft ob ein Gerät in ein Gebäude-Polygon oder zu nah an einen Baum platziert wird
+function isBlockedByObstacle(lat, lng, obstacles) {
+  if (!obstacles) return false;
+  for (const ob of obstacles) {
+    if (ob.type === "buildingPoly" && ob.polygon) {
+      if (pointInPolygon(lat, lng, ob.polygon)) return { type: "building", label: ob.label };
+    } else if (ob.type === "building") {
+      // rechteckiges Gebäude (rotiert) — bbox-check in lokale meter
+      const dx = (lng - ob.lng) * 111320 * Math.cos(ob.lat * Math.PI / 180);
+      const dy = (lat - ob.lat) * 111320;
+      const rot = -(ob.rot || 0) * Math.PI / 180;
+      const lx = dx * Math.cos(rot) - dy * Math.sin(rot);
+      const ly = dx * Math.sin(rot) + dy * Math.cos(rot);
+      if (Math.abs(lx) <= (ob.w || 6) / 2 && Math.abs(ly) <= (ob.h || 4) / 2) {
+        return { type: "building", label: ob.label };
+      }
+    }
+  }
+  return false;
+}
+
 /* Fallschutz-Flächenberechnung (EN 1177):
    - individualSum = Summe aller einzelnen Fallzonen (theoretisch, wenn Geräte isoliert wären)
    - mergedArea   = tatsächlich benötigter zusammenhängender Belag (inkl. ~30cm Verbindungs-Puffer
@@ -1491,6 +1513,13 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         // Check collision before placing
         const movedPl={id:"__tmp",eqId:pending.id,lat:e.latlng.lat,lng:e.latlng.lng,rot:0};
         const eq=pending;
+        // In Gebäude?
+        const blocker=isBlockedByObstacle(e.latlng.lat,e.latlng.lng,obstacles);
+        if(blocker){
+          setCollisionWarning(`Nicht auf Gebäude platzierbar: ${blocker.label}`);
+          setTimeout(()=>setCollisionWarning(false),2500);
+          return;
+        }
         const hasConflict = placed.some(other=>{
           const otherEq=equipment.find(x=>x.id===other.eqId);
           if(!otherEq) return false;
@@ -1499,7 +1528,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           return zonesOverlap(movedPl,eq,other,otherEq);
         });
         if(hasConflict){
-          setCollisionWarning(true);
+          setCollisionWarning("Fallräume dürfen sich nicht überschneiden");
           setTimeout(()=>setCollisionWarning(false),2500);
           return; // Stay in place-mode, let user try again
         }
@@ -1701,6 +1730,15 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       });
       m.on("dragend",(e)=>{
         const ll=e.target.getLatLng();
+        // In Gebäude?
+        const blocker=isBlockedByObstacle(ll.lat,ll.lng,obstacles);
+        if(blocker){
+          const pd=e.target._preDrag||{lat:pl.lat,lng:pl.lng};
+          e.target.setLatLng([pd.lat,pd.lng]);
+          setCollisionWarning(`Nicht auf Gebäude: ${blocker.label}`);
+          setTimeout(()=>setCollisionWarning(false),2500);
+          return;
+        }
         // Check if new position causes fall zone overlap with ANY other dynamic equipment
         const movedPl={...pl, lat:ll.lat, lng:ll.lng};
         const hasConflict = placed.some(other=>{
@@ -1716,7 +1754,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           // Revert to pre-drag position
           const pd=e.target._preDrag||{lat:pl.lat,lng:pl.lng};
           e.target.setLatLng([pd.lat,pd.lng]);
-          setCollisionWarning(true);
+          setCollisionWarning("Fallräume überschneiden sich");
           setTimeout(()=>setCollisionWarning(false),2500);
         } else {
           updateProject(p=>({...p,placed:p.placed.map(x=>x.id===pl.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
@@ -1750,6 +1788,26 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         L.circle([ob.lat,ob.lng],{
           radius:ob.r||3, color:"#065F46", weight:1.5, fillColor:"#10B981", fillOpacity:.22,
         }).addTo(obLayer);
+      } else if(ob.type==="buildingPoly"){
+        const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
+        // Gebäude-Polygon direkt aus OSM-Koordinaten
+        L.polygon(ob.polygon,{
+          color:isSel?"#D4A853":"#B91C1C", weight:isSel?3:2.5,
+          fillColor:"#EF4444", fillOpacity:.35, dashArray:isSel?null:"6 3",
+        }).addTo(obLayer).on("click",()=>setSelected({type:"ob",id:ob.id}));
+        // Kleiner Label-Marker in der Mitte
+        const icon=L.divIcon({
+          className:"",
+          html:`<div style="
+            background:${isSel?"#D4A853":"rgba(185,28,28,0.92)"};
+            color:white;padding:3px 8px;border-radius:4px;
+            font-size:11px;font-weight:700;white-space:nowrap;
+            box-shadow:0 2px 5px rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.4);
+            transform:translate(-50%,-50%);
+          ">🏢 ${ob.label}</div>`,
+          iconSize:[0,0], iconAnchor:[0,0],
+        });
+        L.marker([ob.lat,ob.lng],{icon,interactive:false}).addTo(obLayer);
       } else if(ob.type==="building"){
         const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
         const mToDegLat=(m)=>m/111320;
@@ -1856,6 +1914,92 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         mapRef.current.setView([parseFloat(data[0].lat),parseFloat(data[0].lon)],19);
       }
     }catch(e){ console.warn("geocode failed",e); }
+  }
+
+  const [osmLoading,setOsmLoading]=useState(false);
+  const [osmStatus,setOsmStatus]=useState(null); // {type:"info"|"error", msg}
+
+  // OSM-Features (Gebäude & Bäume) aus dem aktuellen Kartenausschnitt via Overpass API
+  async function detectFromOrthophoto(){
+    if(!mapRef.current) return;
+    setOsmLoading(true); setOsmStatus({type:"info",msg:"Luftbild-Analyse läuft…"});
+    try {
+      const b=mapRef.current.getBounds();
+      const south=b.getSouth(), west=b.getWest(), north=b.getNorth(), east=b.getEast();
+      // Overpass-QL: Gebäudeumrisse + Bäume im Bbox
+      const query=`[out:json][timeout:20];
+(
+  way["building"](${south},${west},${north},${east});
+  relation["building"](${south},${west},${north},${east});
+  node["natural"="tree"](${south},${west},${north},${east});
+);
+out geom;`;
+      const response=await fetch("https://overpass-api.de/api/interpreter",{
+        method:"POST",
+        body:"data="+encodeURIComponent(query),
+      });
+      if(!response.ok) throw new Error(`Overpass ${response.status}`);
+      const data=await response.json();
+
+      const newObstacles=[];
+      let nBuildings=0, nTrees=0;
+      for(const el of (data.elements||[])){
+        if(el.type==="way" && el.tags?.building && el.geometry){
+          // Gebäude als Polygon — speichern als "buildingPoly" Obstacle
+          const coords=el.geometry.map(g=>[g.lat,g.lon]);
+          // Center als Referenzpunkt
+          const cLat=coords.reduce((s,c)=>s+c[0],0)/coords.length;
+          const cLng=coords.reduce((s,c)=>s+c[1],0)/coords.length;
+          newObstacles.push({
+            id:uid(),
+            type:"buildingPoly",
+            lat:cLat, lng:cLng,
+            polygon:coords, // array of [lat,lng]
+            label:el.tags?.name||el.tags?.addr_housename||"Gebäude",
+            source:"osm",
+            osmId:`way/${el.id}`,
+          });
+          nBuildings++;
+        } else if(el.type==="node" && el.tags?.natural==="tree"){
+          // Baumkrone geschätzt: aus tags.diameter_crown (wenn vorhanden) oder tags.height
+          let r=3;
+          if(el.tags?.diameter_crown) r=parseFloat(el.tags.diameter_crown)/2||3;
+          else if(el.tags?.height) r=Math.max(2,parseFloat(el.tags.height)/3);
+          newObstacles.push({
+            id:uid(),
+            type:"tree",
+            lat:el.lat, lng:el.lon,
+            r:Math.max(1.5,Math.min(8,r)),
+            label:el.tags?.species||"Baum (OSM)",
+            source:"osm",
+            osmId:`node/${el.id}`,
+          });
+          nTrees++;
+        }
+      }
+
+      if(newObstacles.length===0){
+        setOsmStatus({type:"error",msg:"Keine Gebäude oder Bäume im Kartenausschnitt in OpenStreetMap gefunden"});
+        setTimeout(()=>setOsmStatus(null),4000);
+        return;
+      }
+
+      // Merge in bestehende Hindernisse, aber OSM-Duplikate vermeiden
+      updateProject(p=>{
+        const existing=p.obstacles||[];
+        const existingOsmIds=new Set(existing.filter(o=>o.source==="osm").map(o=>o.osmId));
+        const toAdd=newObstacles.filter(o=>!existingOsmIds.has(o.osmId));
+        return { ...p, obstacles:[...existing, ...toAdd] };
+      });
+      setOsmStatus({type:"info",msg:`✓ ${nBuildings} Gebäude + ${nTrees} Bäume aus OpenStreetMap erkannt`});
+      setTimeout(()=>setOsmStatus(null),4000);
+    } catch(e){
+      console.warn("Overpass failed",e);
+      setOsmStatus({type:"error",msg:`Overpass-API Fehler: ${e.message}`});
+      setTimeout(()=>setOsmStatus(null),4000);
+    } finally {
+      setOsmLoading(false);
+    }
   }
 
   // ── Keyboard shortcuts ──
@@ -2384,6 +2528,31 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
         bgroup.position.set(lx,0,-lz);
         bgroup.rotation.y=(ob.rot||0)*Math.PI/180;
         worldGroup.add(bgroup);
+      } else if(ob.type==="buildingPoly" && ob.polygon){
+        // OSM-Gebäude: echten Umriss extrudieren
+        const bh=3.2; // Standardhöhe 3.2m
+        try {
+          const shape=new THREE.Shape();
+          ob.polygon.forEach(([plat,plng],i)=>{
+            const [px,pz]=toLocal(plat,plng);
+            if(i===0) shape.moveTo(px,-pz);
+            else shape.lineTo(px,-pz);
+          });
+          const extrudeSettings={depth:bh,bevelEnabled:false,steps:1};
+          const geo=new THREE.ExtrudeGeometry(shape,extrudeSettings);
+          geo.rotateX(-Math.PI/2); // shape liegt in XZ, extrudiert wird Y
+          // Translate to correct Y = 0..bh
+          const pos=geo.attributes.position;
+          for(let i=0;i<pos.count;i++){
+            pos.setY(i, pos.getY(i)+bh);
+          }
+          pos.needsUpdate=true;
+          geo.computeVertexNormals();
+          const mesh=new THREE.Mesh(geo,
+            new THREE.MeshStandardMaterial({color:"#E5E7EB",roughness:.85,side:THREE.DoubleSide}));
+          mesh.castShadow=true; mesh.receiveShadow=true;
+          worldGroup.add(mesh);
+        } catch(e){ console.warn("buildingPoly 3D failed",e); }
       }
     });
 
@@ -2524,13 +2693,17 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
                   </button>
                 ))}
               </div>
+              <button onClick={detectFromOrthophoto} disabled={osmLoading}
+                title="Gebäudeumrisse und Bäume aus OpenStreetMap im aktuellen Kartenausschnitt laden"
+                style={{padding:"7px 13px",border:"none",background:osmLoading?T.muted:`linear-gradient(135deg, ${T.gold} 0%, ${T.goldLight} 100%)`,color:osmLoading?"white":"#5A3D00",cursor:osmLoading?"wait":"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",borderRadius:8,boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
+                {osmLoading?"⏳ Analysiere…":"🏢 Gebäude & Bäume erkennen"}
+              </button>
             </div>
 
             {/* Tool palette */}
             <div style={{position:"absolute",left:10,top:60,zIndex:500,background:"white",padding:6,border:`1.5px solid ${T.border}`,borderRadius:10,display:"flex",flexDirection:"column",gap:4,boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
               <TB active={tool==="select"} onClick={()=>{setTool("select");setPendingEq(null);}} title="Auswählen / verschieben">✥</TB>
-              <TB active={tool==="tree"} onClick={()=>{setTool("tree");setPendingEq(null);}} title="Baum hinzufügen (klicken auf Karte)">🌳</TB>
-              <TB active={tool==="building"} onClick={()=>{setTool("building");setPendingEq(null);}} title="Gebäude hinzufügen (klicken auf Karte)">🏠</TB>
+              <TB active={tool==="tree"} onClick={()=>{setTool("tree");setPendingEq(null);}} title="Baum manuell platzieren (klicken)">🌳</TB>
               <TB active={tool==="measure"} onClick={()=>{setTool("measure");setPendingEq(null);}} title="Distanz messen (2 Punkte anklicken)">📏</TB>
               {/* Trennlinie */}
               <div style={{height:1,background:T.border,margin:"2px 0"}}/>
@@ -2601,10 +2774,17 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
               </div>
             )}
 
-            {/* Conflict warning toast */}
+            {/* Conflict warning toast (shows actual message) */}
             {collisionWarning&&(
               <div style={{position:"absolute",top:55,left:"50%",transform:"translateX(-50%)",zIndex:600,background:T.red,color:"white",padding:"8px 16px",borderRadius:8,boxShadow:"0 3px 12px rgba(220,38,38,.35)",fontSize:13,fontWeight:600,animation:"fadeIn .15s"}}>
-                ⚠️ Fallräume dürfen sich nicht überschneiden
+                ⚠️ {typeof collisionWarning==="string"?collisionWarning:"Fallräume dürfen sich nicht überschneiden"}
+              </div>
+            )}
+
+            {/* OSM status toast */}
+            {osmStatus&&(
+              <div style={{position:"absolute",top:55,left:"50%",transform:"translateX(-50%)",zIndex:600,background:osmStatus.type==="error"?T.red:T.green,color:"white",padding:"8px 16px",borderRadius:8,boxShadow:"0 3px 12px rgba(0,0,0,.25)",fontSize:13,fontWeight:600}}>
+                {osmStatus.msg}
               </div>
             )}
 
@@ -2778,6 +2958,15 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           </div>
         </div>
       </div>
+
+      {/* RenderStudio Modal — Photorealistic Path Tracing */}
+      {renderStudioOpen && threeRef.current && (
+        <RenderStudio
+          sourceScene={threeRef.current.scene}
+          sourceCamera={threeRef.current.camera}
+          onClose={()=>setRenderStudioOpen(false)}
+        />
+      )}
     </div>
   );
 }
