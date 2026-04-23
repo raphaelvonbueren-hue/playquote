@@ -1091,384 +1091,215 @@ function computeFallProtectionArea(placed, equipment, projectCenter) {
   };
 }
 
-/* ═══════════════════════════ RENDER STUDIO (Photorealistischer Path-Tracer) ═══════════════════════════ */
-// Öffnet einen Modal, überträgt die 3D-Szene in einen GPU-Path-Tracer (three-gpu-pathtracer),
-// rendert progressive Samples bis zur gewünschten Qualität und bietet Download als PNG an.
+/* ═══════════════════════════ RENDER STUDIO (Hochauflösendes Standard-Rendering) ═══════════════════════════ */
+// Kein Path-Tracer — stattdessen 4K-Supersampling mit guter Beleuchtung, Schatten, Environment.
+// Sieht professionell aus und crasht nicht bei komplexen Geometrien.
 function RenderStudio({ sourceScene, sourceCamera, onClose }) {
   const canvasRef = useRef(null);
-  const [status, setStatus] = useState("init"); // init | rendering | paused | done | error
-  const [samples, setSamples] = useState(0);
-  const [targetSamples, setTargetSamples] = useState(200);
-  const [resolution, setResolution] = useState("2K"); // HD | 2K | 4K
+  const [status, setStatus] = useState("init");
+  const [resolution, setResolution] = useState("4K");
+  const [supersampling, setSupersampling] = useState(2);
   const [errorMsg, setErrorMsg] = useState("");
-  const [elapsed, setElapsed] = useState(0);
   const [previewURL, setPreviewURL] = useState(null);
-  const pathTracerRef = useRef(null);
-  const rendererRef = useRef(null);
-  const animRef = useRef(null);
-  const startTimeRef = useRef(0);
-  const pausedRef = useRef(false);
+  const [elapsed, setElapsed] = useState(0);
 
-  const resMap = { HD:[1280,720], "2K":[1920,1080], "4K":[3840,2160] };
+  const resMap = { "2K":[1920,1080], "4K":[3840,2160], "8K":[7680,4320] };
 
-  // Setup path tracer
-  useEffect(() => {
-    let cancelled = false;
-    let renderer = null;
-    let pathTracer = null;
+  async function render() {
+    try {
+      setStatus("rendering");
+      setErrorMsg("");
+      setPreviewURL(null);
+      const t0 = performance.now();
 
-    (async () => {
+      const [W, H] = resMap[resolution];
+      const SS = supersampling;
+      const renderW = W * SS;
+      const renderH = H * SS;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = renderW;
+      canvas.height = renderH;
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: false,
+        preserveDrawingBuffer: true,
+      });
+      renderer.setPixelRatio(1);
+      renderer.setSize(renderW, renderH, false);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.1;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+      const scene = sourceScene.clone(true);
+      scene.background = new THREE.Color("#B8D5E8");
+
       try {
-        setStatus("init");
-        if (!canvasRef.current || !sourceScene || !sourceCamera) {
-          setErrorMsg("Keine 3D-Szene verfügbar — bitte erst Geräte platzieren und 3D-Ansicht aktivieren.");
-          setStatus("error");
-          return;
-        }
-        const { WebGLPathTracer } = await import("three-gpu-pathtracer");
-        if (cancelled) return;
-
-        const [W, H] = resMap[resolution];
-        renderer = new THREE.WebGLRenderer({
-          canvas: canvasRef.current,
-          antialias: false,
-          alpha: false,
-          preserveDrawingBuffer: true,
-        });
-        renderer.setPixelRatio(1);
-        renderer.setSize(W, H, false);
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.0;
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
-        rendererRef.current = renderer;
-
-        // Build a CLEAN scene for path tracing — only solid Meshes with PBR materials.
-        // GridHelper, Lines, LineSegments, Points, and MeshBasicMaterial are NOT supported
-        // by the path tracer and cause "Cannot read properties of undefined" errors.
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color("#B8D5E8");
-
-        // Environment map for IBL
         const envTex = makeSkyEnv(renderer);
         scene.environment = envTex;
+      } catch(e) { console.warn("Env setup skipped:", e.message); }
 
-        // Lights (neu hinzufügen, weil der Path-Tracer die Lichter der Quellszene nicht
-        // automatisch übernimmt — und Direct-Lights+HemiLight machen die Szene realistisch)
-        const hemi = new THREE.HemisphereLight(0xcfe2ff, 0x6b7a52, 0.7);
-        scene.add(hemi);
-        const sun = new THREE.DirectionalLight(0xffffff, 2.5);
-        sun.position.set(30, 45, 20);
-        sun.castShadow = false; // path tracer macht Schatten selbst
+      let hasSun = false;
+      scene.traverse(obj => { if (obj.isDirectionalLight) hasSun = true; });
+      if (!hasSun) {
+        const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+        sun.position.set(40, 60, 30);
+        sun.castShadow = true;
+        sun.shadow.mapSize.width = 4096;
+        sun.shadow.mapSize.height = 4096;
+        sun.shadow.camera.left = -50;
+        sun.shadow.camera.right = 50;
+        sun.shadow.camera.top = 50;
+        sun.shadow.camera.bottom = -50;
+        sun.shadow.camera.near = 0.1;
+        sun.shadow.camera.far = 200;
+        sun.shadow.bias = -0.0005;
         scene.add(sun);
-
-        // Ground plane
-        const ground = new THREE.Mesh(
-          new THREE.PlaneGeometry(100, 100),
-          new THREE.MeshStandardMaterial({ color: "#87986D", roughness: 0.95, metalness: 0 })
-        );
-        ground.rotation.x = -Math.PI / 2;
-        scene.add(ground);
-
-        // Nur unterstützte Meshes aus der Quellszene übertragen — ULTRA-DEFENSIV
-        // Der Path-Tracer crasht bei unsauberer Geometrie (unindexed/indexed Mix,
-        // fehlenden Attributen, transparenten Materials). Wir bauen daher jede Geometrie
-        // komplett neu auf: non-indexed BufferGeometry mit position + normal.
-        let meshCount = 0;
-        const sceneMeshes = [];
-        sourceScene.traverse((obj) => {
-          if (!obj.isMesh) return;
-          if (obj === ground) return;
-          sceneMeshes.push(obj);
-        });
-
-        for (const obj of sceneMeshes) {
-          try {
-            if (!obj.geometry || !obj.geometry.attributes || !obj.geometry.attributes.position) continue;
-            if (obj.geometry.attributes.position.count === 0) continue;
-
-            const srcMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-            if (!srcMat) continue;
-            if (srcMat.isMeshBasicMaterial) continue;  // Path tracer braucht PBR
-            // Skip transparente Hilfsebenen (Halo, Auswahlringe)
-            if (srcMat.transparent === true && (srcMat.opacity ?? 1) < 0.99) continue;
-
-            obj.updateMatrixWorld();
-
-            // Geometrie komplett neu aufbauen, um Probleme mit Indexing/Attributes zu vermeiden
-            let geom = obj.geometry.clone();
-            // De-index (non-indexed ist robuster für BVH)
-            if (geom.index !== null) {
-              geom = geom.toNonIndexed();
-            }
-            // Entferne ALLE extra Attributes ausser position — das vermeidet Array-Längen-Mismatches
-            const pos = geom.attributes.position;
-            const cleanGeom = new THREE.BufferGeometry();
-            cleanGeom.setAttribute("position", new THREE.BufferAttribute(pos.array.slice(), 3));
-            // Normale neu berechnen (viele Geometrien haben fehlerhafte Normale nach clone/toNonIndexed)
-            cleanGeom.computeVertexNormals();
-
-            // Sicheres Standard-Material
-            const color = (srcMat.color && srcMat.color.isColor) ? srcMat.color.clone() : new THREE.Color(0x888888);
-            const newMat = new THREE.MeshStandardMaterial({
-              color,
-              roughness: typeof srcMat.roughness === "number" ? srcMat.roughness : 0.7,
-              metalness: typeof srcMat.metalness === "number" ? srcMat.metalness : 0,
-            });
-
-            const clone = new THREE.Mesh(cleanGeom, newMat);
-            clone.applyMatrix4(obj.matrixWorld);
-            scene.add(clone);
-            meshCount++;
-          } catch (meshErr) {
-            console.warn("Skip mesh for path tracer:", meshErr.message);
-          }
-        }
-
-        if (meshCount === 0) {
-          throw new Error("Keine renderfähigen 3D-Objekte in der Szene gefunden. Bitte erst Geräte im Planer platzieren und die 3D-Ansicht öffnen, bevor Sie das Render-Studio starten.");
-        }
-
-        // Clone camera and use same transform
-        const camera = sourceCamera.clone();
-        camera.aspect = W / H;
-        camera.updateProjectionMatrix();
-
-        // Initialize path tracer — minimal, robuste Optionen (vermeidet API-Inkompatibilitäten)
-        pathTracer = new WebGLPathTracer(renderer);
-        pathTracer.renderScale = 1;
-        pathTracer.bounces = 3;
-        pathTracerRef.current = pathTracer;
-
-        // BVH-Worker optional — bei Fehler auf synchrones setScene zurückfallen
-        try {
-          const { ParallelMeshBVHWorker } = await import("three-mesh-bvh/src/workers/ParallelMeshBVHWorker.js");
-          const bvhWorker = new ParallelMeshBVHWorker();
-          pathTracer.setBVHWorker(bvhWorker);
-          await pathTracer.setSceneAsync(scene, camera);
-        } catch (workerErr) {
-          console.warn("BVH worker not available, trying sync setScene:", workerErr);
-          try {
-            // Versuch 1: GenerateMeshBVHWorker (alternativer Worker)
-            const { GenerateMeshBVHWorker } = await import("three-mesh-bvh/src/workers/GenerateMeshBVHWorker.js");
-            const fallbackWorker = new GenerateMeshBVHWorker();
-            pathTracer.setBVHWorker(fallbackWorker);
-            await pathTracer.setSceneAsync(scene, camera);
-          } catch (workerErr2) {
-            console.warn("Any worker failed, using main-thread sync BVH:", workerErr2);
-            // Versuch 2: ohne Worker — setScene direkt (blockiert UI kurz)
-            pathTracer.setScene(scene, camera);
-          }
-        }
-        if (cancelled) return;
-
-        setStatus("rendering");
-        startTimeRef.current = performance.now();
-
-        // Render loop
-        function loop() {
-          if (cancelled) return;
-          if (pausedRef.current) {
-            animRef.current = requestAnimationFrame(loop);
-            return;
-          }
-          try {
-            pathTracer.renderSample();
-            const s = pathTracer.samples;
-            setSamples(Math.floor(s));
-            setElapsed((performance.now() - startTimeRef.current) / 1000);
-            // Update preview every 8 samples (less than that is blurry)
-            if (Math.floor(s) % 4 === 0 && s > 0) {
-              // canvas already drawn by renderSample
-            }
-            if (s >= targetSamples) {
-              setStatus("done");
-              setPreviewURL(renderer.domElement.toDataURL("image/png"));
-              return;
-            }
-          } catch (e) {
-            console.error("Path tracer error:", e);
-            setErrorMsg(String(e.message || e));
-            setStatus("error");
-            return;
-          }
-          animRef.current = requestAnimationFrame(loop);
-        }
-        loop();
-      } catch (e) {
-        console.error("Render init error:", e);
-        if (!cancelled) {
-          setErrorMsg(String(e.message || e));
-          setStatus("error");
-        }
+        const hemi = new THREE.HemisphereLight(0xcfe2ff, 0x6b7a52, 0.5);
+        scene.add(hemi);
       }
-    })();
 
-    return () => {
-      cancelled = true;
-      if (animRef.current) cancelAnimationFrame(animRef.current);
-      if (pathTracerRef.current) {
-        try { pathTracerRef.current.dispose(); } catch(e){}
-      }
-      if (rendererRef.current) {
-        try {
-          rendererRef.current.dispose();
-          rendererRef.current.forceContextLoss();
-        } catch(e){}
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolution, targetSamples]);
+      scene.traverse(obj => {
+        if (obj.isMesh) {
+          obj.castShadow = true;
+          obj.receiveShadow = true;
+        }
+      });
 
-  function download() {
-    if (!rendererRef.current) return;
-    const url = rendererRef.current.domElement.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `PlayQuote-Render-${resolution}-${samples}samples-${Date.now()}.png`;
-    document.body.appendChild(a); a.click(); a.remove();
+      const camera = sourceCamera.clone();
+      camera.aspect = W / H;
+      camera.updateProjectionMatrix();
+
+      renderer.render(scene, camera);
+
+      let finalCanvas;
+      if (SS > 1) {
+        finalCanvas = document.createElement("canvas");
+        finalCanvas.width = W;
+        finalCanvas.height = H;
+        const ctx = finalCanvas.getContext("2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(canvas, 0, 0, renderW, renderH, 0, 0, W, H);
+      } else {
+        finalCanvas = canvas;
+      }
+
+      const url = finalCanvas.toDataURL("image/png");
+      setPreviewURL(url);
+      setElapsed(((performance.now() - t0) / 1000).toFixed(1));
+
+      if (canvasRef.current) {
+        const cctx = canvasRef.current.getContext("2d");
+        canvasRef.current.width = W;
+        canvasRef.current.height = H;
+        const img = new Image();
+        img.onload = () => cctx.drawImage(img, 0, 0);
+        img.src = url;
+      }
+
+      renderer.dispose();
+
+      setStatus("done");
+    } catch (err) {
+      console.error("Render failed:", err);
+      setErrorMsg(err.message || String(err));
+      setStatus("error");
+    }
   }
 
-  const percent = Math.min(100, Math.round((samples / targetSamples) * 100));
-  const fmtTime = (s) => s < 60 ? `${s.toFixed(0)}s` : `${Math.floor(s/60)}m ${Math.floor(s%60)}s`;
+  useEffect(() => {
+    const t = setTimeout(() => render(), 100);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function download() {
+    if (!previewURL) return;
+    const a = document.createElement("a");
+    a.href = previewURL;
+    a.download = `playquote-render-${resolution}-${Date.now()}.png`;
+    a.click();
+  }
+
   const [W, H] = resMap[resolution];
 
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
-      <div style={{background:"white",borderRadius:14,padding:0,maxWidth:1280,width:"100%",maxHeight:"95vh",display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 20px 60px rgba(0,0,0,0.4)"}} onClick={e=>e.stopPropagation()}>
-        {/* Header */}
-        <div style={{padding:"16px 24px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`,color:"white"}}>
-          <div>
-            <div className="syne" style={{fontSize:18,fontWeight:800,letterSpacing:.3}}>🎬 Render Studio</div>
-            <div style={{fontSize:11.5,opacity:.85,marginTop:2}}>Physikalisch korrektes Path-Tracing · GPU-beschleunigt · Progressive Samples</div>
-          </div>
-          <button onClick={onClose} style={{background:"rgba(255,255,255,0.15)",border:"none",color:"white",width:34,height:34,borderRadius:8,cursor:"pointer",fontSize:18,fontFamily:"inherit"}}>✕</button>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"white",borderRadius:16,boxShadow:"0 10px 40px rgba(0,0,0,.4)",padding:24,maxWidth:"95vw",maxHeight:"95vh",display:"flex",flexDirection:"column",gap:14,minWidth:520}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div className="syne" style={{fontSize:22,fontWeight:800,color:T.green}}>🎬 Rendering Studio</div>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:24,cursor:"pointer",color:T.muted,padding:4}}>✕</button>
         </div>
-
-        {/* Body */}
-        <div style={{flex:1,display:"flex",minHeight:0,background:"#1A1A1A"}}>
-          {/* Canvas area */}
-          <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:20,position:"relative",overflow:"hidden"}}>
-            <canvas ref={canvasRef} width={W} height={H} style={{maxWidth:"100%",maxHeight:"100%",width:"auto",height:"auto",borderRadius:6,boxShadow:"0 4px 30px rgba(0,0,0,0.5)"}}/>
-            {status==="init"&&<div style={{position:"absolute",color:"white",textAlign:"center"}}>
-              <div style={{fontSize:32,marginBottom:8}}>⚙️</div>
-              <div style={{fontSize:14}}>Path-Tracer wird initialisiert…</div>
-              <div style={{fontSize:11,opacity:.7,marginTop:4}}>BVH wird aus der 3D-Szene gebaut</div>
-            </div>}
-            {status==="error"&&<div style={{position:"absolute",color:"white",textAlign:"center",padding:20,background:"rgba(0,0,0,0.7)",borderRadius:8,maxWidth:400}}>
-              <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
-              <div style={{fontSize:14,fontWeight:700,color:T.red}}>Render-Fehler</div>
-              <div style={{fontSize:12,opacity:.85,marginTop:8}}>{errorMsg}</div>
-            </div>}
-          </div>
-
-          {/* Controls panel */}
-          <div style={{width:280,background:"#222",color:"white",padding:20,display:"flex",flexDirection:"column",gap:14,borderLeft:"1px solid #333",overflow:"auto"}}>
-            {/* Status */}
-            <div>
-              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Status</div>
-              <div style={{fontSize:13,fontWeight:600,color:status==="done"?"#52E287":status==="error"?"#FF6B6B":status==="paused"?"#FFD97A":"#7AC6FF"}}>
-                {status==="init"&&"Initialisiere…"}
-                {status==="rendering"&&"Rendering…"}
-                {status==="paused"&&"Pausiert"}
-                {status==="done"&&"✓ Fertig"}
-                {status==="error"&&"⚠ Fehler"}
-              </div>
-            </div>
-
-            {/* Progress */}
-            {status!=="init"&&status!=="error"&&<div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:6}}>
-                <span style={{color:"#888"}}>Samples</span>
-                <span style={{fontFamily:"monospace"}}>{samples}/{targetSamples}</span>
-              </div>
-              <div style={{background:"#111",borderRadius:4,overflow:"hidden",height:6}}>
-                <div style={{width:`${percent}%`,height:"100%",background:`linear-gradient(90deg, ${T.green}, ${T.greenLight})`,transition:"width .3s"}}/>
-              </div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#888",marginTop:4}}>
-                <span>{percent}%</span>
-                <span>⏱ {fmtTime(elapsed)}</span>
-              </div>
-            </div>}
-
-            {/* Resolution */}
-            <div>
-              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Auflösung</div>
-              <div style={{display:"flex",gap:4}}>
-                {["HD","2K","4K"].map(r=>(
-                  <button key={r} onClick={()=>setResolution(r)} disabled={status==="rendering"}
-                    style={{flex:1,padding:"7px 0",border:"none",borderRadius:6,cursor:status==="rendering"?"not-allowed":"pointer",
-                      background:resolution===r?T.green:"#333",color:"white",fontFamily:"inherit",fontSize:12,fontWeight:600,
-                      opacity:status==="rendering"?.5:1}}>{r}</button>
-                ))}
-              </div>
-              <div style={{fontSize:10,color:"#666",marginTop:4}}>
-                {resolution==="HD"&&"1280×720 · ~10-30 Sek"}
-                {resolution==="2K"&&"1920×1080 · ~30-90 Sek"}
-                {resolution==="4K"&&"3840×2160 · ~2-5 Min"}
-              </div>
-            </div>
-
-            {/* Quality */}
-            <div>
-              <div style={{fontSize:10,color:"#888",fontWeight:700,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>Qualität (Samples)</div>
-              <div style={{display:"flex",gap:4}}>
-                {[{l:"Vorschau",n:50},{l:"Standard",n:200},{l:"Hoch",n:500},{l:"Maximum",n:1000}].map(q=>(
-                  <button key={q.n} onClick={()=>setTargetSamples(q.n)} disabled={status==="rendering"}
-                    style={{flex:1,padding:"7px 0",border:"none",borderRadius:6,cursor:status==="rendering"?"not-allowed":"pointer",
-                      background:targetSamples===q.n?T.green:"#333",color:"white",fontFamily:"inherit",fontSize:10.5,fontWeight:600,
-                      opacity:status==="rendering"?.5:1}}>{q.l}</button>
-                ))}
-              </div>
-              <div style={{fontSize:10,color:"#666",marginTop:4}}>
-                Mehr Samples = weniger Rauschen, längere Renderzeit
-              </div>
-            </div>
-
-            {/* Controls */}
-            <div style={{marginTop:"auto",display:"flex",flexDirection:"column",gap:8}}>
-              {status==="rendering"&&(
-                <button onClick={()=>{pausedRef.current=true;setStatus("paused");}}
-                  style={{padding:"10px",background:"#444",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600}}>
-                  ⏸ Pausieren
+        <div style={{fontSize:13,color:T.muted,lineHeight:1.5}}>
+          Rendert die 3D-Ansicht in hoher Auflösung mit Supersampling, Soft-Shadows und HDR-Beleuchtung als PNG für Präsentationen.
+        </div>
+        <div style={{display:"flex",gap:14,flexWrap:"wrap",padding:"12px 14px",background:T.bg,borderRadius:10}}>
+          <div>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>Auflösung</div>
+            <div style={{display:"flex",background:"white",border:`1.5px solid ${T.border}`,borderRadius:6,overflow:"hidden"}}>
+              {["2K","4K","8K"].map(r=>(
+                <button key={r} onClick={()=>setResolution(r)} disabled={status==="rendering"}
+                  style={{padding:"5px 10px",border:"none",background:resolution===r?T.green:"white",color:resolution===r?"white":T.text,cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}}>
+                  {r}
                 </button>
-              )}
-              {status==="paused"&&(
-                <button onClick={()=>{pausedRef.current=false;setStatus("rendering");}}
-                  style={{padding:"10px",background:T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600}}>
-                  ▶ Fortsetzen
-                </button>
-              )}
-              {(status==="rendering"||status==="paused")&&(
-                <button onClick={()=>{
-                  if(rendererRef.current){
-                    setPreviewURL(rendererRef.current.domElement.toDataURL("image/png"));
-                  }
-                  setStatus("done");
-                  if(animRef.current) cancelAnimationFrame(animRef.current);
-                }}
-                  style={{padding:"10px",background:"#555",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>
-                  ⏹ Jetzt stoppen & Bild sichern
-                </button>
-              )}
-              {status==="done"&&(
-                <button onClick={download}
-                  style={{padding:"12px",background:`linear-gradient(135deg, ${T.gold} 0%, ${T.goldLight} 100%)`,color:"#5A3D00",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:700,boxShadow:"0 3px 12px rgba(212,168,83,0.4)"}}>
-                  📥 PNG herunterladen
-                </button>
-              )}
-              {status==="error"&&(
-                <button onClick={()=>window.location.reload()}
-                  style={{padding:"10px",background:T.red,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",fontSize:12}}>
-                  🔄 Neu laden
-                </button>
-              )}
-            </div>
-
-            {/* Info */}
-            <div style={{fontSize:10,color:"#666",lineHeight:1.5,padding:"10px 12px",background:"#111",borderRadius:6,marginTop:6}}>
-              💡 <b>Path-Tracing:</b> Jeder Lichtstrahl wird physikalisch korrekt verfolgt — inkl. Reflexionen, Schatten, indirektem Licht.
+              ))}
             </div>
           </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:4}}>Qualität</div>
+            <div style={{display:"flex",background:"white",border:`1.5px solid ${T.border}`,borderRadius:6,overflow:"hidden"}}>
+              {[{v:1,l:"1×"},{v:2,l:"2×"},{v:4,l:"4×"}].map(s=>(
+                <button key={s.v} onClick={()=>setSupersampling(s.v)} disabled={status==="rendering"}
+                  style={{padding:"5px 10px",border:"none",background:supersampling===s.v?T.green:"white",color:supersampling===s.v?"white":T.text,cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}}>
+                  {s.l} SSAA
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{alignSelf:"flex-end"}}>
+            <button onClick={render} disabled={status==="rendering"}
+              style={{padding:"8px 18px",border:"none",background:status==="rendering"?T.muted:T.green,color:"white",cursor:status==="rendering"?"wait":"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit",borderRadius:7}}>
+              {status==="rendering"?"⏳ Rendert…":"🎨 Neu rendern"}
+            </button>
+          </div>
+          {previewURL && (
+            <div style={{alignSelf:"flex-end"}}>
+              <button onClick={download}
+                style={{padding:"8px 18px",border:"none",background:T.gold,color:"#5A3D00",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit",borderRadius:7}}>
+                ⬇ PNG Download
+              </button>
+            </div>
+          )}
+        </div>
+        <div style={{background:"#1a1a1a",borderRadius:10,overflow:"hidden",position:"relative",minHeight:300,maxHeight:"60vh",aspectRatio:`${W}/${H}`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <canvas ref={canvasRef} style={{maxWidth:"100%",maxHeight:"60vh",display:"block"}}/>
+          {status==="rendering" && (
+            <div style={{position:"absolute",color:"white",fontSize:14,fontWeight:600,textAlign:"center"}}>
+              <div style={{fontSize:32,marginBottom:8}}>⏳</div>
+              <div>Rendert {resolution} mit {supersampling}× Supersampling…</div>
+              <div style={{fontSize:12,opacity:.7,marginTop:4}}>({W*supersampling}×{H*supersampling} intern)</div>
+            </div>
+          )}
+          {status==="error" && (
+            <div style={{position:"absolute",color:"#EF4444",fontSize:13,textAlign:"center",padding:20,maxWidth:500}}>
+              <div style={{fontSize:24,marginBottom:8}}>⚠️</div>
+              <div style={{fontWeight:700,marginBottom:6}}>Render-Fehler</div>
+              <div style={{opacity:.85,fontSize:12}}>{errorMsg}</div>
+            </div>
+          )}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:T.muted}}>
+          <div>
+            {status==="done" && `✓ Gerendert in ${elapsed}s · ${W}×${H}px`}
+            {status==="rendering" && "Rendert…"}
+            {status==="init" && "Bereit"}
+          </div>
+          <div style={{fontSize:10}}>Tipp: 4K mit 2× SSAA ergibt 7680×4320 intern → schärfstes Ergebnis</div>
         </div>
       </div>
     </div>
