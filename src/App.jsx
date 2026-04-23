@@ -343,18 +343,44 @@ function Sidebar({page,setPage,projects,activeProjectId,setActiveProjectId}) {
         ))}
         {projects.length>0&&<>
           <div style={{fontSize:10,fontWeight:700,letterSpacing:1.5,opacity:.5,padding:"16px 10px 6px",textTransform:"uppercase"}}>Aktive Projekte</div>
-          {projects.map(p=>(
-            <button key={p.id} onClick={()=>{setActiveProjectId(p.id);setPage("planner");}}
-              style={{width:"100%",padding:"8px 10px",border:"none",cursor:"pointer",borderRadius:8,
-                background:(page==="planner"||page==="quote")&&activeProjectId===p.id?"rgba(255,255,255,.15)":"transparent",
-                color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:400,textAlign:"left",lineHeight:1.3,marginBottom:2}}>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <span style={{fontSize:13}}>📐</span>
-                <div><div style={{fontWeight:600,fontSize:12}}>{p.name.length>22?p.name.slice(0,22)+"…":p.name}</div>
-                <div style={{opacity:.6,fontSize:10}}>{p.status}</div></div>
+          {projects.map(p=>{
+            const isActive = activeProjectId===p.id;
+            const isProjectPage = isActive && (page==="planner"||page==="quote"||page==="description");
+            return (
+              <div key={p.id}>
+                <button onClick={()=>{setActiveProjectId(p.id);setPage("planner");}}
+                  style={{width:"100%",padding:"8px 10px",border:"none",cursor:"pointer",borderRadius:8,
+                    background:isProjectPage?"rgba(255,255,255,.15)":"transparent",
+                    color:"#fff",fontFamily:"inherit",fontSize:12,fontWeight:400,textAlign:"left",lineHeight:1.3,marginBottom:2}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:13}}>📐</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:12}}>{p.name.length>22?p.name.slice(0,22)+"…":p.name}</div>
+                      <div style={{opacity:.6,fontSize:10}}>{p.status}</div>
+                    </div>
+                  </div>
+                </button>
+                {/* Sub-menu wenn das Projekt aktiv ist */}
+                {isProjectPage && (
+                  <div style={{marginLeft:10,marginBottom:6,borderLeft:"2px solid rgba(255,255,255,.15)",paddingLeft:8}}>
+                    {[
+                      {id:"planner",      icon:"🗺",  label:"Planer"},
+                      {id:"description",  icon:"📝", label:"Beschreibung"},
+                      {id:"quote",        icon:"📄", label:"Offerte"},
+                    ].map(s=>(
+                      <button key={s.id} onClick={()=>setPage(s.id)}
+                        style={{width:"100%",display:"flex",alignItems:"center",gap:7,padding:"5px 8px",border:"none",cursor:"pointer",borderRadius:5,
+                          background:page===s.id?"rgba(212,168,83,.25)":"transparent",
+                          color:page===s.id?"#F0CB7A":"rgba(255,255,255,.75)",
+                          fontFamily:"inherit",fontSize:11,fontWeight:page===s.id?600:400,textAlign:"left",marginBottom:1}}>
+                        <span style={{fontSize:12}}>{s.icon}</span>{s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            </button>
-          ))}
+            );
+          })}
         </>}
       </nav>
       <div style={{padding:"16px 20px",borderTop:"1px solid rgba(255,255,255,.1)",fontSize:11,opacity:.4}}>v1.0 · Swiss Edition</div>
@@ -3358,6 +3384,295 @@ function Kv({label,val}){
   );
 }
 
+/* ═══════════════════════════ PROJECT DESCRIPTION (A4 Druck-PDF) ═══════════════════════════ */
+// Automatisch generierte Projekttexte die professionell klingen — für Offert-Beilage.
+// Verwendet Projekt-Daten (Standort, Alter, Nutzer, Geräte, Material) um Texte zu generieren
+// die nach echter Planungsbüro-Rhetorik klingen.
+
+function ProjectDescription({project,equipment,manufacturers}) {
+  if (!project) return null;
+
+  const placed = project.placed || [];
+  const eqItems = placed.map(pl => equipment.find(e => e.id === pl.eqId)).filter(Boolean);
+  const usedCats = [...new Set(eqItems.map(e => e.cat))];
+  const mfrs = [...new Set(eqItems.map(e => manufacturers.find(m => m.id === e.mfr)?.name).filter(Boolean))];
+  const ages = project.wizard?.ages || [];
+  const users = project.wizard?.users || 50;
+  const locType = project.wizard?.locType || "Quartier";
+  const material = project.wizard?.mat || "Robinie";
+  const floor = project.wizard?.floor || "EPDM";
+  const areaW = project.area?.w || 15;
+  const areaH = project.area?.h || 10;
+  const areaTotal = areaW * areaH;
+  const obstacles = project.obstacles || [];
+  const trees = obstacles.filter(o => o.type === "tree").length;
+  const buildings = obstacles.filter(o => o.type === "building" || o.type === "buildingPoly").length;
+
+  // ── TEXT-GENERATOREN ──────────────────────────────────────────────
+  // Zufalls-Auswahl, aber deterministisch basiert auf Projekt-ID für stabile Ergebnisse
+  function seed(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  }
+  const s = seed(project.name + project.id);
+  function pick(arr, offset = 0) { return arr[(s + offset) % arr.length]; }
+  function pickN(arr, n, offset = 0) {
+    const res = [];
+    const used = new Set();
+    for (let i = 0; i < n && used.size < arr.length; i++) {
+      let idx = (s + offset + i * 7) % arr.length;
+      while (used.has(idx)) idx = (idx + 1) % arr.length;
+      used.add(idx);
+      res.push(arr[idx]);
+    }
+    return res;
+  }
+
+  // ── INTRO (Standort-Charakterisierung) ────────────────────────────
+  const introTemplates = [
+    `Der ${locType.toLowerCase()} im Umfeld der Liegenschaft ${project.client || "des Auftraggebers"} bildet den räumlichen Ausgangspunkt für ein neugestaltetes Spielraumkonzept. Mit einer nutzbaren Fläche von rund ${areaTotal} m² und einer geplanten Nutzerfrequenz von ${users} Personen pro Tag entsteht hier ein Ort, der Bewegung, Begegnung und kreatives Spiel in sich vereint.`,
+    `Am Standort ${project.client || "des Projekts"} soll ein neuer Spielbereich entstehen, der die Qualität des ${locType.toLowerCase()}s nachhaltig aufwertet. Das Planungsgebiet umfasst ${areaTotal} m² und ist auf eine tägliche Nutzung durch etwa ${users} Personen ausgelegt.`,
+    `Für ${project.client || "den Auftraggeber"} soll im Bereich ${locType.toLowerCase()} ein zeitgemässer Spielraum geschaffen werden. Die Gestaltungsfläche von ${areaTotal} m² wurde sorgfältig auf die erwartete Frequenz von ${users} Nutzenden pro Tag abgestimmt.`,
+  ];
+
+  // ── VISION (Gestaltungsphilosophie) ───────────────────────────────
+  const visionTemplates = [
+    `Im Zentrum der Planung steht die Überzeugung, dass gut gestaltete Spielräume weit mehr sind als blosse Freizeitflächen – sie sind Bildungsorte, Begegnungsstätten und wichtige Impulsgeber für die motorische wie soziale Entwicklung der Nutzerinnen und Nutzer. Aus dieser Haltung heraus entsteht ein Konzept, das sowohl den gesetzlichen Vorgaben der EN 1176/1177 als auch den individuellen Bedürfnissen der ${ages.join(" und ") || "unterschiedlichen Altersgruppen"} gerecht wird.`,
+    `Die gestalterische Grundhaltung folgt dem Prinzip des differenzierten Spielangebots: Jede Altersgruppe findet Herausforderungen auf ihrem Entwicklungsniveau, gleichzeitig entstehen Schnittstellen, an denen verschiedene Generationen miteinander in Kontakt treten. Spielräume werden nicht isoliert gedacht, sondern als Teil eines grösseren Freiraumnetzwerks verstanden.`,
+    `Die Gestaltung folgt einem holistischen Ansatz, der funktionale Anforderungen mit ästhetischen Qualitäten verbindet. Spielgeräte werden nicht additiv nebeneinander gestellt, sondern in räumliche Beziehungen gesetzt, die dem Gelände einen eigenen Charakter verleihen und vielfältige Spielnarrativen ermöglichen.`,
+    `Ein guter Spielplatz ist immer auch ein Kulturort – ein Ort, an dem Kinder lernen, Grenzen auszuloten, Kompromisse einzugehen und gemeinsam Welten zu erfinden. Die vorliegende Planung versteht sich als Einladung zu diesem freien Spiel und bietet die infrastrukturellen Voraussetzungen dafür.`,
+  ];
+
+  // ── ANALYSE (Bestand & Kontext) ───────────────────────────────────
+  const analysisTemplates = [
+    `Die topografische und vegetative Analyse des Areals zeigt ${trees > 0 ? `einen Bestand von ${trees} schutzwürdigen Bäumen, deren Kronenradien in die Zonierung einbezogen wurden` : `eine grundsätzlich offene Fläche mit guter Besonnung`}${buildings > 0 ? `, sowie ${buildings} angrenzende Baustrukturen, die als räumliche Abgrenzung funktionieren` : ""}. Die daraus resultierenden Mikroklimate – besonnte Aktivflächen und beschattete Ruhezonen – wurden bei der Geräteplatzierung bewusst berücksichtigt.`,
+    `Eine sorgfältige Bestandsaufnahme bildet die Grundlage für jede nachhaltige Planung. ${trees > 0 ? `Die vorhandene Baumstruktur mit ${trees} wertvollen Einzelbäumen prägt die atmosphärische Qualität des Ortes und wird als gestalterisches Element in das Konzept integriert.` : ""} Die räumliche Disposition der neuen Geräte nimmt Rücksicht auf bestehende Wegeverbindungen und verkehrliche Anschlüsse.`,
+    `Der Standort zeichnet sich durch eine klare räumliche Fassung aus. ${buildings > 0 ? `Die ${buildings} bestehenden Baukörper der unmittelbaren Umgebung bilden einen ruhigen Hintergrund` : `Die umliegenden Grünflächen bilden einen ruhigen Rahmen`}, vor dem sich die neuen Spielangebote farblich und funktional absetzen. ${trees > 0 ? `Der Altbaumbestand mit ${trees} Exemplaren bleibt ungeschmälert erhalten und spendet den erforderlichen Schatten in den warmen Sommermonaten.` : ""}`,
+  ];
+
+  // ── ZIELGRUPPE (Altersgruppen & Bedürfnisse) ──────────────────────
+  const ageNarratives = {
+    "Kleinkinder (1–3)": "Für die Jüngsten wurden niederschwellige Angebote mit geringen Fallhöhen und taktil ansprechenden Oberflächen vorgesehen. Sensorische Erfahrungen, Balancieren im geschützten Rahmen und erste motorische Herausforderungen stehen im Vordergrund.",
+    "Kindergarten (3–6)": "Die Kindergartenkinder finden in der Planung gezielt altersgerechte Herausforderungen: Klettergerüste mit überschaubaren Höhen, Sandspielbereiche für kreatives Gestalten sowie Rollenspiel-Elemente wie Spielhäuser und Themen-Gerätekombinationen.",
+    "Schulkinder (6–12)": "Für die Schulkinder entstehen anspruchsvollere Bewegungsangebote. Schaukeln, Klettergerüste mit Fallhöhen bis 2,5 m sowie Balancier- und Geschicklichkeits-Parcours fördern die weitere motorische Differenzierung und laden zum sozialen Austausch ein.",
+    "Altersgemischt": "Die altersübergreifende Nutzbarkeit wurde bewusst in das Konzept integriert: Geräte wie Nestschaukeln, Seilpyramiden oder Karussells eignen sich gleichermassen für jüngere und ältere Kinder und fördern das generationenübergreifende Spiel.",
+    "Jugendliche (12+)": "Für die älteren Jugendlichen stehen urbane Bewegungselemente wie Kletterparcours, Seilanlagen oder Fitness-Stationen zur Verfügung. Diese Angebote ermöglichen anspruchsvollere körperliche Betätigung und sprechen zugleich das Bedürfnis nach Rückzugsorten an.",
+  };
+
+  // ── GERÄTE-CHARAKTERISIERUNGEN pro Kategorie ──────────────────────
+  const categoryNarratives = {
+    "Schaukeln": "Die Schaukelanlage bildet ein zentrales Identifikationselement jedes Spielplatzes. Das rhythmische Vor- und Rückschwingen fördert das Gleichgewichtsempfinden, stärkt die räumliche Orientierung und vermittelt ein Gefühl tiefer Zufriedenheit.",
+    "Rutschen": "Rutschen sind ein unverzichtbares Element des freien Spiels. Der kontrollierte Geschwindigkeitsrausch fördert Mut, Risikoabschätzung und Körperbeherrschung – Kompetenzen, die weit über den Spielplatz hinaus wirken.",
+    "Klettern": "Klettern ist eine der fundamentalsten Bewegungsformen des Menschen. Die gewählten Anlagen fordern Kraft, Koordination und Problemlösungsstrategien auf unterschiedlichen Schwierigkeitsstufen heraus.",
+    "Spieltürme": "Die Spielturm-Anlagen bilden die räumlichen Dreh- und Angelpunkte des Konzepts. Als begehbare Landschaften aus Plattformen, Brücken und Kletterelementen laden sie zu Rollenspielen, Entdeckungsreisen und ausdauerndem gemeinschaftlichem Spiel ein.",
+    "Sandspiel": "Der Sandbereich ist – trotz seiner scheinbaren Einfachheit – einer der pädagogisch wertvollsten Spielorte. Die taktilen Erfahrungen, die Möglichkeit zur gestaltenden Einflussnahme und die offene Spielstruktur fördern Kreativität und soziale Interaktion auf besondere Weise.",
+    "Wipptiere": "Die Federwippgeräte sprechen besonders die jüngsten Nutzenden an. Die rhythmische Bewegung schult das Gleichgewicht und vermittelt erste Erfahrungen mit Schwerkraft und Körperkontrolle.",
+    "Karussell": "Das Karussell vermittelt intensive vestibuläre Reize und stärkt das Gleichgewichtssystem. Gleichzeitig erfordert das gemeinschaftliche Antreiben Kooperation – ein Kind kann nur in Bewegung kommen, wenn andere mitwirken.",
+    "Balancieren": "Balancier-Parcours schulen die propriozeptive Wahrnehmung und fördern die Konzentrationsfähigkeit. Gerade in einer digital geprägten Lebenswelt gewinnen solche leiblichen Körper-Erfahrungen zunehmend an Bedeutung.",
+    "Spielhäuser": "Spielhäuser bieten den wichtigen Rückzugsort, in dem Rollenspiele und narrative Welten entstehen können. Die Architektur des Kleinen schafft Geborgenheit und Entdeckungsfreude zugleich.",
+  };
+
+  // ── MATERIAL & NACHHALTIGKEIT ─────────────────────────────────────
+  const materialNarratives = {
+    "Robinie": "Die Wahl der Robinie als Hauptbaustoff unterstreicht den Anspruch an natürliche Materialität und ökologische Verantwortung. Das Holz der Robinie zählt zu den witterungsbeständigsten einheimischen Hölzern überhaupt, benötigt keine chemische Behandlung und altert würdevoll.",
+    "Douglasie": "Die Douglasie als tragender Baustoff vereint hohe Witterungsbeständigkeit mit einer warmen, ansprechenden Oberfläche. Als einheimisches Nadelholz entspricht sie den Anforderungen an regionale Wertschöpfungsketten.",
+    "KDI": "Das druckimprägnierte Konstruktionsholz (KDI) bietet eine bewährte Kombination aus Wirtschaftlichkeit und Langlebigkeit und eignet sich besonders für stark beanspruchte Konstruktionen.",
+    "Edelstahl": "Edelstahl als Hauptmaterial der tragenden Strukturen gewährleistet höchste Langlebigkeit und minimalen Unterhaltsaufwand. Die zeitlos-moderne Anmutung passt sich sowohl urbanen als auch landschaftlichen Kontexten geschmeidig ein.",
+    "Pulverbeschichtet": "Die pulverbeschichteten Stahlkonstruktionen verbinden robuste Funktionalität mit vielfältigen Farboptionen – eine ideale Basis für akzentuierte Gestaltungslösungen.",
+    "Kombiniert": "Die bewusste Materialkombination aus Holz, Edelstahl und farbigem HPL erzeugt ein lebendiges Gesamtbild. Jedes Material übernimmt dabei die Funktion, für die es am besten geeignet ist – Holz für Wärme und Haptik, Stahl für Stabilität, HPL für Farbe und Beständigkeit.",
+    "HPL+Robinie": "Die Kombination aus HPL-Fassadenelementen und Robinien-Tragstruktur verbindet moderne Gestaltung mit natürlicher Materialität. Das Ergebnis ist ein zeitgemässer und zugleich behaglicher Ausdruck.",
+    "Stahl+Seil": "Die Seil-Stahl-Konstruktionen entsprechen dem Stand der Technik im anspruchsvollen Kletterspielplatz-Bau. Langlebige Stahlseile mit eingebundenen Kunststofffasern verbinden Flexibilität mit höchster Sicherheitsreserve.",
+  };
+
+  // ── FALLSCHUTZ NARRATIVE ──────────────────────────────────────────
+  const floorNarratives = {
+    "EPDM (gebunden)": "Als Fallschutz wurde EPDM-Granulat gewählt – ein gebundener, dauerhafter Belag, der höchsten Sicherheitsanforderungen entspricht. Die Oberfläche bleibt witterungsunabhängig bespielbar und lässt sich individuell einfärben, was gestalterische Akzente ermöglicht.",
+    "Fallschutzplatten (gebunden)": "Die Verwendung zertifizierter Fallschutzplatten garantiert eine durchgängig normgerechte Aufprallfläche bei minimalem Unterhaltsaufwand. Die modulare Bauweise erlaubt zudem eine spätere Erweiterung ohne komplette Neuverlegung.",
+    "Holzschnitzel (lose)": "Holzschnitzel als loser Fallschutz bringen eine natürliche Materialität auf den Platz und fügen sich atmosphärisch in das Landschaftsbild ein. Die regelmässige Kontrolle der Schichtdicke ist Teil eines dokumentierten Unterhaltskonzepts.",
+    "Rundkies (lose)": "Rundkies als Fallschutz steht in einer traditionellen Linie des mitteleuropäischen Spielplatzbaus. Die offenporige Struktur gewährleistet gute Drainage und niedrige Investitionskosten bei regelmässigem Unterhalt.",
+    "Wiese (gebunden)": "Der Rasen als naturnaher Fallschutz bei geringen Fallhöhen bindet den Spielraum atmosphärisch in die umgebende Grünfläche ein und erhöht die ökologische Wertigkeit des Areals.",
+  };
+
+  // ── SICHERHEITS-NARRATIVE ─────────────────────────────────────────
+  const safetyTemplates = [
+    `Die Planung erfolgt in konsequenter Einhaltung der europäischen Normen EN 1176 (Spielplatzgeräte) und EN 1177 (stossdämpfende Böden). Sämtliche Geräte werden von zertifizierten Herstellern bezogen und entsprechen dem aktuellen Stand der Sicherheitstechnik. Nach Fertigstellung erfolgt die Hauptinspektion durch einen unabhängigen Sachverständigen.`,
+    `Die Sicherheitsplanung folgt einem dreistufigen Prinzip: Erstens werden ausschliesslich zertifizierte Geräte eingesetzt (EN 1176-konform), zweitens werden die Fallräume gemäss EN 1177 dimensioniert und mit geeigneten Dämpfungsbelägen ausgestattet, drittens wird nach Abschluss der Montage eine unabhängige Sicherheits-Abnahme durchgeführt.`,
+    `Die Balance zwischen Sicherheit und Herausforderung ist eine der zentralen Planungsaufgaben. Allzu risikoarme Spielräume entwickeln bei Kindern keine Gefahrenwahrnehmung – deshalb werden kalkulierbare Risiken bewusst zugelassen, während unvorhersehbare Gefährdungen konsequent ausgeschlossen werden.`,
+  ];
+
+  // ── BARRIEREFREIHEIT & INKLUSION ──────────────────────────────────
+  const inclusionTemplates = [
+    `Ein besonderes Augenmerk liegt auf der inklusiven Nutzbarkeit. Ausgewählte Geräte – wie die Nestschaukel oder das bodengleiche Karussell – sind auch für Kinder mit körperlichen Einschränkungen geeignet und ermöglichen ein gemeinsames Spielerlebnis ohne Ausgrenzung.`,
+    `Die barrierefreie Zugänglichkeit wird durch einen durchgängig rollstuhlgängigen Hauptweg gewährleistet, der alle zentralen Spielbereiche erschliesst. Ausgewählte Geräte bieten zudem sogenannte inklusive Funktionen: Sie sind auch für Kinder mit motorischen Einschränkungen bespielbar und fördern damit ein selbstverständliches Miteinander.`,
+    `Inklusion denkt Gestaltung von den Rändern her: Wer für Menschen mit Einschränkungen gut plant, schafft in der Regel auch für alle anderen Nutzenden ein angenehmeres Erlebnis. Diese Überlegung durchzieht sämtliche planerischen Entscheidungen – von der Oberflächengestaltung bis zur Geräteauswahl.`,
+  ];
+
+  // ── NACHHALTIGKEITS-ASPEKTE ───────────────────────────────────────
+  const sustainabilityTemplates = [
+    `Nachhaltigkeit versteht sich in diesem Projekt nicht als Schlagwort, sondern als konkretes Handlungsprinzip: Die eingesetzten Hölzer stammen aus zertifizierter Waldbewirtschaftung (FSC bzw. PEFC), die metallenen Komponenten sind zu 100 % recyclingfähig, und die Anlage wird mit einer geplanten Nutzungsdauer von mindestens 20 Jahren dimensioniert.`,
+    `Die Lebenszyklus-Betrachtung steht im Zentrum der Materialwahl. Spielplätze werden zunehmend als Investitionen in die nächste Generation verstanden – umso wichtiger ist es, dass sie selbst nach dem Rückbau möglichst geringe ökologische Spuren hinterlassen. Die gewählten Komponenten lassen sich sortenrein trennen und einer fachgerechten Wiederverwertung zuführen.`,
+    `Das Konzept orientiert sich an den Kriterien der Kreislaufwirtschaft: minimierte Transportwege durch europäische Lieferanten, langlebige Materialien, reparaturfreundliche Konstruktionen und die Möglichkeit zum modularen Rück- bzw. Umbau am Ende der Nutzungsphase.`,
+  ];
+
+  // ── ZONIERUNG / RAUMKONZEPT ───────────────────────────────────────
+  const zoningTemplates = [
+    `Die räumliche Gliederung folgt dem bewährten Prinzip konzentrischer Aktivitätszonen: Ruhige Angebote für jüngere Kinder liegen im Zentrum des Platzes, bewegungsintensivere Geräte für ältere Nutzende am Rand. So entstehen Übergänge und zugleich klare Sicherheitsabstände.`,
+    `Die Anordnung der Geräte folgt einer choreografischen Logik: Vom Eingangsbereich aus führt ein gedanklicher Weg über niederschwellige Angebote hin zu anspruchsvolleren Aktivitäten. Dieser räumliche Spannungsbogen fördert eine intuitive Erschliessung und vermeidet Überforderung.`,
+    `Die Zonierung unterscheidet drei Bereiche: eine kommunikative Aufenthaltszone mit Sitzgelegenheiten, eine aktive Bewegungszone mit den Hauptgeräten sowie eine ruhige Rückzugszone mit Sand- und Spielhausangeboten. Die Zonen sind durch unterschiedliche Bodenbeläge und Pflanzenelemente subtil voneinander abgesetzt.`,
+  ];
+
+  // ── BETRIEB & UNTERHALT ───────────────────────────────────────────
+  const maintenanceTemplates = [
+    `Ein durchdachter Betriebsplan sichert die langfristige Qualität der Anlage: Visuelle Wochenkontrollen, monatliche Funktionskontrollen sowie jährliche Hauptinspektionen durch zertifizierte Fachleute bilden die Grundlage des Unterhaltskonzepts. Die Dokumentation erfolgt digital und schafft Transparenz über den Zustand der Geräte.`,
+    `Der langfristige Betrieb wurde bereits in der Planungsphase mitbedacht. Die gewählten Geräte und Materialien zeichnen sich durch geringen Wartungsaufwand aus. Ersatzteile sind durch die etablierten Hersteller langfristig verfügbar.`,
+    `Die Betreiberorganisation erhält ein massgeschneidertes Pflegekonzept, das sowohl die kurzfristigen Sichtkontrollen als auch die langfristigen Ersatz- und Erweiterungsperspektiven abdeckt. Damit bleibt die Anlage über ihre gesamte Nutzungsdauer auf einem konstant hohen Qualitätsniveau.`,
+  ];
+
+  // ── ABSCHLUSS / FAZIT ─────────────────────────────────────────────
+  const conclusionTemplates = [
+    `Das vorliegende Konzept versteht sich als gestalterischer Beitrag zu einem öffentlichen Raum, in dem sich Generationen begegnen, Kinder wachsen können und das Miteinander täglich neu verhandelt wird. Wir freuen uns, dieses Projekt mit Ihnen zu realisieren.`,
+    `Mit diesem Planungsvorschlag legen wir die Grundlage für einen Ort, der weit über die reine Funktion hinaus wirkt: ein Anziehungspunkt für die Nachbarschaft, ein Bildungsraum für Kinder, ein Ankerpunkt im städtischen Gefüge. Wir stehen Ihnen für die weitere Konkretisierung gerne zur Verfügung.`,
+    `Wir sind überzeugt, dass der hier skizzierte Spielraum einen wertvollen Beitrag zur Lebensqualität am Standort leisten wird. Die nächsten Schritte – Detailplanung, Ausschreibung und Realisierung – koordinieren wir gerne in enger Abstimmung mit Ihnen.`,
+  ];
+
+  // ── Textbausteine zusammenstellen ─────────────────────────────────
+  const intro       = pick(introTemplates, 0);
+  const vision      = pick(visionTemplates, 1);
+  const analysis    = pick(analysisTemplates, 2);
+  const zoning      = pick(zoningTemplates, 3);
+  const safety      = pick(safetyTemplates, 4);
+  const inclusion   = pick(inclusionTemplates, 5);
+  const sustain     = pick(sustainabilityTemplates, 6);
+  const maintenance = pick(maintenanceTemplates, 7);
+  const conclusion  = pick(conclusionTemplates, 8);
+  const materialText = materialNarratives[material] || materialNarratives["Kombiniert"];
+  const floorText = floorNarratives[floor] || floorNarratives["EPDM (gebunden)"];
+
+  // ── RENDER ──────────────────────────────────────────────────────
+  return (
+    <div className="fade-in">
+      {/* Actions-Leiste (nur am Bildschirm sichtbar, nicht beim Drucken) */}
+      <div className="no-print" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
+        <div>
+          <div className="syne" style={{fontSize:24,fontWeight:800}}>Projektbeschreibung</div>
+          <div style={{color:T.muted,fontSize:13}}>Druckbare A4-Beilage für die Offerte</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <Btn variant="ghost" onClick={()=>window.location.reload()}>🔄 Neu generieren</Btn>
+          <Btn onClick={()=>window.print()}>🖨 Drucken / als PDF speichern</Btn>
+        </div>
+      </div>
+
+      {/* A4-Dokument */}
+      <div className="print-document" style={{background:"white",maxWidth:820,margin:"0 auto",boxShadow:"0 4px 20px rgba(0,0,0,.08)",borderRadius:2}}>
+        {/* Header */}
+        <div style={{background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenLight} 100%)`,color:"white",padding:"36px 48px"}}>
+          <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:2,opacity:.85,marginBottom:6}}>Projektbeschreibung</div>
+          <div className="syne" style={{fontSize:30,fontWeight:800,lineHeight:1.15,marginBottom:8}}>{project.name}</div>
+          <div style={{fontSize:13,opacity:.9}}>{project.client}{project.created?` · Stand: ${project.created}`:""}</div>
+        </div>
+
+        {/* Kennzahlen-Band */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",background:T.bg,padding:"18px 48px",borderBottom:`1px solid ${T.border}`,gap:20}}>
+          {[
+            {label:"Fläche",val:`${areaTotal} m²`},
+            {label:"Nutzer/Tag",val:users},
+            {label:"Spielgeräte",val:placed.length},
+            {label:"Kategorien",val:usedCats.length},
+          ].map((k,i)=>(
+            <div key={i}>
+              <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5}}>{k.label}</div>
+              <div className="syne" style={{fontSize:22,fontWeight:800,color:T.green,lineHeight:1}}>{k.val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Text-Inhalt */}
+        <div style={{padding:"36px 48px",fontSize:13,lineHeight:1.65,color:"#2A2F32"}}>
+
+          {/* 1. Einleitung */}
+          <h2 className="syne" style={hStyle}>1. Ausgangslage und Zielsetzung</h2>
+          <p style={pStyle}>{intro}</p>
+          <p style={pStyle}>{vision}</p>
+
+          {/* 2. Standort-Analyse */}
+          <h2 className="syne" style={hStyle}>2. Standort und Bestandsanalyse</h2>
+          <p style={pStyle}>{analysis}</p>
+
+          {/* 3. Zielgruppen */}
+          <h2 className="syne" style={hStyle}>3. Zielgruppen und Spielangebot</h2>
+          {ages.length > 0 ? ages.filter(a => ageNarratives[a]).map(a => (
+            <p key={a} style={pStyle}><strong style={{color:T.green}}>{a} — </strong>{ageNarratives[a]}</p>
+          )) : <p style={pStyle}>{ageNarratives["Altersgemischt"]}</p>}
+
+          {/* 4. Spielgeräte-Charakterisierung */}
+          <h2 className="syne" style={hStyle}>4. Ausgewählte Spielangebote</h2>
+          <p style={pStyle}>Das geplante Spielangebot umfasst {placed.length} Einzelgeräte{mfrs.length>0?` der Hersteller ${mfrs.join(", ")}`:""} und deckt folgende Aktivitätsbereiche ab:</p>
+          {usedCats.filter(c => categoryNarratives[c]).map(c => (
+            <p key={c} style={pStyle}><strong style={{color:T.green}}>{ICONS[c]} {c} — </strong>{categoryNarratives[c]}</p>
+          ))}
+
+          {/* Page break hint for print */}
+          <div className="page-break"></div>
+
+          {/* 5. Zonierung */}
+          <h2 className="syne" style={hStyle}>5. Räumliche Gliederung</h2>
+          <p style={pStyle}>{zoning}</p>
+
+          {/* 6. Material */}
+          <h2 className="syne" style={hStyle}>6. Materialwahl und Konstruktion</h2>
+          <p style={pStyle}>{materialText}</p>
+          <p style={pStyle}>{floorText}</p>
+
+          {/* 7. Sicherheit */}
+          <h2 className="syne" style={hStyle}>7. Sicherheitskonzept</h2>
+          <p style={pStyle}>{safety}</p>
+
+          {/* 8. Inklusion */}
+          <h2 className="syne" style={hStyle}>8. Inklusion und Barrierefreiheit</h2>
+          <p style={pStyle}>{inclusion}</p>
+
+          {/* 9. Nachhaltigkeit */}
+          <h2 className="syne" style={hStyle}>9. Nachhaltigkeit</h2>
+          <p style={pStyle}>{sustain}</p>
+
+          {/* 10. Betrieb */}
+          <h2 className="syne" style={hStyle}>10. Betrieb und Unterhalt</h2>
+          <p style={pStyle}>{maintenance}</p>
+
+          {/* 11. Fazit */}
+          <h2 className="syne" style={hStyle}>11. Ausblick</h2>
+          <p style={{...pStyle,fontStyle:"italic",background:"#F4F1EC",padding:"18px 22px",borderLeft:`3px solid ${T.gold}`,borderRadius:"0 6px 6px 0"}}>{conclusion}</p>
+        </div>
+
+        {/* Footer */}
+        <div style={{borderTop:`1px solid ${T.border}`,padding:"20px 48px",display:"flex",justifyContent:"space-between",fontSize:10.5,color:T.muted}}>
+          <div>{project.name} · {project.client}</div>
+          <div>Erstellt mit PlayQuote · Seite {/* auto via css counter */}</div>
+        </div>
+      </div>
+
+      {/* Print-CSS */}
+      <style>{`
+        @media print {
+          body { background: white !important; }
+          .no-print { display: none !important; }
+          aside, nav, .sidebar, [class*="Sidebar"] { display: none !important; }
+          main { margin-left: 0 !important; padding: 0 !important; }
+          .print-document { box-shadow: none !important; max-width: 100% !important; border-radius: 0 !important; }
+          .page-break { page-break-before: always; }
+          h2 { page-break-after: avoid; }
+          p { page-break-inside: avoid; orphans: 3; widows: 3; }
+          @page { margin: 2cm 1.5cm; size: A4; }
+        }
+      `}</style>
+    </div>
+  );
+}
+const hStyle = { fontSize:16, fontWeight:700, color:"#1B4332", marginTop:22, marginBottom:10, letterSpacing:.2 };
+const pStyle = { marginBottom:12, textAlign:"justify", hyphens:"auto" };
+
 /* ═══════════════════════════ QUOTE ═══════════════════════════ */
 function Quote({project,equipment,manufacturers,workPrices}) {
   const placed=project.placed||[];
@@ -3710,6 +4025,8 @@ export default function App() {
       case"planner": return activeProject?<Planner project={activeProject} equipment={equipment} setProjects={setProjects} setPage={setPage} setActiveProjectId={setActiveProjectId}/>:
         <div style={{textAlign:"center",padding:60}}><div style={{fontSize:48}}>📁</div><div className="syne" style={{fontWeight:700,fontSize:18,marginTop:12}}>Kein Projekt ausgewählt</div><div style={{color:T.muted,marginTop:8}}>Wähle ein Projekt aus der Seitenleiste</div></div>;
       case"quote": return activeProject?<Quote project={activeProject} equipment={equipment} manufacturers={manufacturers} workPrices={workPrices}/>:null;
+      case"description": return activeProject?<ProjectDescription project={activeProject} equipment={equipment} manufacturers={manufacturers}/>:
+        <div style={{textAlign:"center",padding:60}}><div style={{fontSize:48}}>📝</div><div className="syne" style={{fontWeight:700,fontSize:18,marginTop:12}}>Kein Projekt ausgewählt</div><div style={{color:T.muted,marginTop:8}}>Wähle ein Projekt aus der Seitenleiste</div></div>;
       default: return null;
     }
   }
