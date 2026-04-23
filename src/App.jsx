@@ -3408,6 +3408,211 @@ function ProjectDescription({project,equipment,manufacturers}) {
   const trees = obstacles.filter(o => o.type === "tree").length;
   const buildings = obstacles.filter(o => o.type === "building" || o.type === "buildingPoly").length;
 
+  // ════════════════════════════════════════════════════════════════════
+  // SPIELWERT-ANALYSE (Play Value Scoring)
+  // Jedes Gerät wird in 6 Dimensionen bewertet (0–5 Sterne):
+  //   social       = Gemeinschaftsspiel (wie viele Kinder gleichzeitig)
+  //   motor        = Grobmotorische Förderung (Kraft, Ausdauer, Koordination)
+  //   vestibular   = Gleichgewicht / Drehwahrnehmung
+  //   challenge    = Herausforderung & Mut (Höhen, Geschwindigkeit)
+  //   creative     = Kreatives Rollenspiel & offene Spielstruktur
+  //   inclusive    = Auch für Kinder mit Einschränkungen nutzbar
+  //
+  // Scoring basiert auf: Kategorie, Grösse, Fallhöhe, Artikel-Nr-Hinweisen.
+  // ════════════════════════════════════════════════════════════════════
+
+  function playValue(eq) {
+    if (!eq) return null;
+    const n = (eq.name || "").toLowerCase();
+    const d = (eq.desc || "").toLowerCase();
+    const name = n + " " + d;
+    const fz = eq.fallZone || 0;
+    const maxDim = Math.max(eq.size?.[0] || 0, eq.size?.[1] || 0);
+
+    let social = 1, motor = 1, vestibular = 1, challenge = 1, creative = 1, inclusive = 1;
+    const highlights = [];
+
+    // ── Per-Kategorie Baseline ──────────────────────────────────────
+    switch (eq.cat) {
+      case "Schaukeln":
+        motor = 3; vestibular = 5;
+        if (name.includes("nest") || name.includes("vogelnest")) {
+          // Nestschaukel: mehrere Kinder, inklusiv, liegend nutzbar
+          social = 5; inclusive = 5; challenge = 3;
+          highlights.push("🌟 Nest-Schaukel: auch liegend und gemeinsam nutzbar");
+          highlights.push("♿ Rollstuhl- und inklusionsgeeignet");
+        } else if (name.includes("doppel") || name.includes("kombi")) {
+          social = 3; inclusive = 2; challenge = fz >= 2.5 ? 4 : 3;
+          highlights.push("Zwei Sitzplätze – parallele Nutzung");
+        } else {
+          social = 2; inclusive = 2; challenge = fz >= 2.5 ? 4 : 3;
+        }
+        if (name.includes("tor-rahmen") || name.includes("tor")) {
+          challenge = Math.max(challenge, 4);
+        }
+        break;
+
+      case "Rutschen":
+        motor = 3; vestibular = 3; challenge = fz >= 2 ? 4 : 3;
+        if (name.includes("röhren") || name.includes("tunnel")) {
+          creative = 3;
+          highlights.push("Geschlossene Röhre – intensives Körpergefühl");
+        }
+        if (fz >= 2.5) {
+          highlights.push("🎢 Höhere Rutschhöhe: herausforderndes Geschwindigkeitserlebnis");
+        }
+        inclusive = 2;
+        break;
+
+      case "Klettern":
+        motor = 5; challenge = 4; vestibular = 3;
+        social = 2; creative = 2;
+        inclusive = 1;
+        if (name.includes("pyramide") || name.includes("seilpyramide") || name.includes("corocord")) {
+          social = 4; motor = 5;
+          highlights.push("🧗 3D-Kletternetz: räumlich-motorische Hochförderung");
+          highlights.push("Mehrere Kinder gleichzeitig in unterschiedlichen Höhen");
+        }
+        break;
+
+      case "Spieltürme":
+        // Spieltürme sind in der Regel das "Herzstück" — hoher Wert in mehreren Dimensionen
+        social = 4; motor = 4; challenge = 4; creative = 5; vestibular = 3;
+        inclusive = 2;
+        if (fz >= 2.5 || maxDim >= 6) {
+          challenge = 5; motor = 5;
+          highlights.push("🏯 Hoher Spielturm: anspruchsvolles Kletter- und Rollenspielmotiv");
+        }
+        if (name.includes("piraten") || name.includes("schiff") || name.includes("burg") || name.includes("kastell") || name.includes("leuchtturm") || name.includes("baumhaus") || name.includes("eisenbahn") || name.includes("zug")) {
+          creative = 5;
+          highlights.push("🎭 Themen-Spielwelt: intensives Rollenspiel & narrative Fantasie");
+        }
+        if (name.includes("rutsche") || d.includes("rutsche")) {
+          highlights.push("Integrierte Rutsche – mehrfunktionale Spielstation");
+        }
+        if (name.includes("seil") || name.includes("netz") || name.includes("rope")) {
+          highlights.push("Kletternetze – 3D-Bewegung und Koordinationsförderung");
+        }
+        break;
+
+      case "Sandspiel":
+        creative = 5; social = 4; motor = 2; challenge = 1;
+        inclusive = 4; // Sand ist grundsätzlich auch für Kinder im Rollstuhl zugänglich
+        highlights.push("🏖 Offene Spielstruktur – hoher kreativer Wert");
+        highlights.push("Gut zugänglich für alle Altersgruppen und Mobilitätslevel");
+        break;
+
+      case "Wipptiere":
+        vestibular = 4; motor = 2; challenge = 2;
+        social = name.includes("doppel") ? 3 : 1;
+        creative = 3; // Rollenspiel-Aspekt (Pferd, Tier etc.)
+        inclusive = 2;
+        break;
+
+      case "Karussell":
+        vestibular = 5; social = 5; motor = 3; challenge = 3;
+        inclusive = 4;
+        creative = 2;
+        highlights.push("🎠 Gemeinschaftsspiel – Kooperation erforderlich zum Antreiben");
+        highlights.push("Starke vestibuläre Reize (Drehsinn / Gleichgewicht)");
+        if (name.includes("inklusiv") || name.includes("rollstuhl") || name.includes("galaxy") || maxDim >= 2.0) {
+          inclusive = 5;
+          highlights.push("♿ Inklusionsfähig – auch mit Rollstuhl nutzbar");
+        }
+        break;
+
+      case "Balancieren":
+        motor = 4; vestibular = 4; challenge = 3;
+        social = 2; creative = 2; inclusive = 1;
+        if (name.includes("parcours") || name.includes("kombi") || name.includes("set")) {
+          highlights.push("⚖️ Parcours-Struktur: vielfältige Bewegungsaufgaben hintereinander");
+        }
+        break;
+
+      case "Spielhäuser":
+        creative = 5; social = 4; motor = 1; challenge = 1;
+        inclusive = 3; vestibular = 1;
+        highlights.push("🏠 Rückzugsort und Rollenspiel-Bühne");
+        if (name.includes("schloss") || name.includes("kastell") || name.includes("burg")) {
+          creative = 5;
+          highlights.push("Märchen-Motiv fördert Fantasie & narrative Kompetenz");
+        }
+        break;
+
+      default:
+        break;
+    }
+
+    // ── Bonus / Spezial-Features anhand Namen ───────────────────────
+    if (name.includes("seilbahn")) {
+      challenge = 5; vestibular = 4; motor = 4; social = 3;
+      highlights.push("🚠 Seilbahn: starkes Geschwindigkeitserlebnis & Mutprobe");
+    }
+    if (name.includes("jumper") || name.includes("trampolin") || name.includes("membran")) {
+      motor = Math.max(motor, 4); vestibular = Math.max(vestibular, 4);
+      challenge = Math.max(challenge, 3);
+      highlights.push("Federnde Fläche: intensive Sprung-Stimulation");
+    }
+    if (name.includes("inklusiv") || name.includes("rollstuhl") || name.includes("barrierefrei")) {
+      inclusive = 5;
+    }
+
+    // Werte begrenzen
+    const clamp = v => Math.max(1, Math.min(5, v));
+    return {
+      social: clamp(social),
+      motor: clamp(motor),
+      vestibular: clamp(vestibular),
+      challenge: clamp(challenge),
+      creative: clamp(creative),
+      inclusive: clamp(inclusive),
+      total: clamp(social) + clamp(motor) + clamp(vestibular) + clamp(challenge) + clamp(creative) + clamp(inclusive),
+      highlights,
+      eq,
+    };
+  }
+
+  // Alle platzierten Geräte bewerten
+  const scored = eqItems.map(playValue).filter(Boolean);
+
+  // Aggregierte Gesamt-Scores (Durchschnitt pro Dimension auf 0-100 skaliert)
+  const avg = (key) => {
+    if (scored.length === 0) return 0;
+    return Math.round((scored.reduce((s, v) => s + v[key], 0) / scored.length) * 20);
+  };
+  const aggregate = {
+    social: avg("social"),
+    motor: avg("motor"),
+    vestibular: avg("vestibular"),
+    challenge: avg("challenge"),
+    creative: avg("creative"),
+    inclusive: avg("inclusive"),
+  };
+  const overallPlayValue = Math.round(
+    (aggregate.social + aggregate.motor + aggregate.vestibular + aggregate.challenge + aggregate.creative + aggregate.inclusive) / 6
+  );
+
+  // Inklusions-Bewertung (Textlevel)
+  const inclusionLevel =
+    aggregate.inclusive >= 75 ? "hoch" :
+    aggregate.inclusive >= 55 ? "gut" :
+    aggregate.inclusive >= 35 ? "grundlegend" : "eingeschränkt";
+
+  // Herausforderungs-Niveau
+  const challengeLevel =
+    aggregate.challenge >= 75 ? "sehr hoch" :
+    aggregate.challenge >= 55 ? "ausgewogen-fordernd" :
+    aggregate.challenge >= 35 ? "moderat" : "niedrig (kindgerecht)";
+
+  // Top-Geräte nach Gesamtwert
+  const topEquipment = [...scored].sort((a, b) => b.total - a.total).slice(0, 5);
+
+  // Besondere inklusive Geräte (inclusive >= 4)
+  const inclusiveEquipment = scored.filter(s => s.inclusive >= 4);
+
+  // Besondere Challenge-Geräte (challenge >= 4)
+  const challengeEquipment = scored.filter(s => s.challenge >= 4);
+
   // ── TEXT-GENERATOREN ──────────────────────────────────────────────
   // Zufalls-Auswahl, aber deterministisch basiert auf Projekt-ID für stabile Ergebnisse
   function seed(str) {
@@ -3616,33 +3821,185 @@ function ProjectDescription({project,equipment,manufacturers}) {
           {/* Page break hint for print */}
           <div className="page-break"></div>
 
-          {/* 5. Zonierung */}
-          <h2 className="syne" style={hStyle}>5. Räumliche Gliederung</h2>
+          {/* 5. SPIELWERT-ANALYSE — neues Kapitel */}
+          <h2 className="syne" style={hStyle}>5. Spielwert-Analyse</h2>
+          <p style={pStyle}>Die qualitative Bewertung eines Spielplatzes bemisst sich nicht an der Anzahl Geräte, sondern am Reichtum der Spielerlebnisse, die er ermöglicht. Die vorliegende Planung wurde nach sechs Dimensionen des Spielwerts bewertet:</p>
+
+          {/* Gesamt-Score als dicke Zahl */}
+          <div style={{background:"#F8FDF9",border:`1px solid ${T.border}`,borderRadius:8,padding:"20px 24px",marginBottom:16,display:"flex",alignItems:"center",gap:24,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.8}}>Gesamt-Spielwert</div>
+              <div className="syne" style={{fontSize:52,fontWeight:800,color:T.green,lineHeight:1}}>{overallPlayValue}<span style={{fontSize:22,color:T.muted,fontWeight:400}}>/100</span></div>
+            </div>
+            <div style={{flex:1,minWidth:260}}>
+              <div style={{fontSize:11.5,color:T.muted,lineHeight:1.5}}>
+                Der Gesamt-Spielwert ergibt sich als Durchschnitt der sechs Teilkriterien.
+                Ein Wert ab 65/100 gilt als ausgewogene Spielplatz-Gestaltung mit hoher
+                pädagogischer Qualität.
+              </div>
+            </div>
+          </div>
+
+          {/* 6-Dimensionen Bar-Chart */}
+          <div style={{marginBottom:18}}>
+            {[
+              {key:"social",     label:"Gemeinschaftsspiel",  desc:"Förderung sozialer Interaktion, kooperatives Spielen, Gruppenerleben", icon:"👥"},
+              {key:"motor",      label:"Grobmotorik",         desc:"Kraft, Ausdauer, Koordination, Bewegungsvielfalt", icon:"💪"},
+              {key:"vestibular", label:"Gleichgewichtssinn",  desc:"Drehen, Schwingen, Balancieren – vestibuläre Stimulation", icon:"🌀"},
+              {key:"challenge",  label:"Herausforderung",     desc:"Kalkulierbares Risiko, Mutproben, Selbstwirksamkeit", icon:"⚡"},
+              {key:"creative",   label:"Kreatives Spiel",     desc:"Rollenspiel, offene Spielstruktur, Fantasie-Raum", icon:"🎨"},
+              {key:"inclusive",  label:"Inklusive Nutzung",   desc:"Barrierefreiheit, Nutzbarkeit bei Einschränkungen", icon:"♿"},
+            ].map(dim => {
+              const val = aggregate[dim.key];
+              return (
+                <div key={dim.key} style={{marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:3,fontSize:12}}>
+                    <span><strong>{dim.icon} {dim.label}</strong> <span style={{color:T.muted,fontSize:11}}>— {dim.desc}</span></span>
+                    <span className="syne" style={{fontWeight:700,color:T.green}}>{val}<span style={{fontSize:10,color:T.muted}}>/100</span></span>
+                  </div>
+                  <div style={{height:8,background:T.bg,borderRadius:4,overflow:"hidden",border:`1px solid ${T.border}`}}>
+                    <div style={{
+                      height:"100%",
+                      width:`${val}%`,
+                      background:val>=75?T.green:val>=50?T.goldLight:val>=35?T.gold:"#C0392B",
+                      transition:"width .4s ease",
+                    }}/>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Inklusions-Niveau als eigener Block */}
+          <div style={{background:aggregate.inclusive>=55?"#E8F5EC":aggregate.inclusive>=35?"#FFF8E1":"#FEE2E2",border:`1px solid ${aggregate.inclusive>=55?T.green:aggregate.inclusive>=35?T.gold:"#C0392B"}`,borderRadius:8,padding:"14px 18px",marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.8,marginBottom:4}}>♿ Barrierefreiheit & Inklusion</div>
+            <div style={{fontSize:13.5,fontWeight:700,color:aggregate.inclusive>=55?T.green:aggregate.inclusive>=35?"#B45309":"#C0392B",marginBottom:6}}>
+              Inklusions-Niveau: <span className="syne">{inclusionLevel}</span> ({aggregate.inclusive}/100)
+            </div>
+            <div style={{fontSize:12,lineHeight:1.55,color:"#2A2F32"}}>
+              {aggregate.inclusive >= 75 && (
+                <>Die Anlage ist in hohem Mass inklusiv gestaltet. Kinder mit körperlichen Einschränkungen finden mehrere geeignete Spielmöglichkeiten vor, die eine echte Teilhabe am Gruppengeschehen ermöglichen.</>
+              )}
+              {aggregate.inclusive >= 55 && aggregate.inclusive < 75 && (
+                <>Die Anlage bietet einen guten Grad an inklusiver Nutzbarkeit. Zentrale Geräte wie {inclusiveEquipment.length>0?inclusiveEquipment.slice(0,2).map(i=>i.eq.name).join(" und "):"die inklusiven Komponenten"} erlauben auch Kindern mit Einschränkungen ein gemeinsames Spielerlebnis.</>
+              )}
+              {aggregate.inclusive >= 35 && aggregate.inclusive < 55 && (
+                <>Die Anlage weist eine grundlegende Barrierefreiheit auf. Einzelne Geräte sind für Kinder mit motorischen Einschränkungen geeignet, das Konzept könnte jedoch durch gezielte Ergänzungen – etwa eine Nestschaukel oder ein bodengleiches Karussell – weiter in Richtung Inklusion ausgebaut werden.</>
+              )}
+              {aggregate.inclusive < 35 && (
+                <>Die Anlage ist primär auf uneingeschränkt mobile Kinder ausgerichtet. Eine Erweiterung um ein inklusives Schlüsselgerät (z.B. Nestschaukel oder Rollstuhl-Karussell) wird zur Verbesserung der Teilhabe empfohlen.</>
+              )}
+            </div>
+          </div>
+
+          {/* Herausforderungs-Niveau */}
+          <div style={{background:"#F8FDF9",border:`1px solid ${T.border}`,borderRadius:8,padding:"14px 18px",marginBottom:14}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.8,marginBottom:4}}>⚡ Herausforderungs-Niveau</div>
+            <div style={{fontSize:13.5,fontWeight:700,color:T.green,marginBottom:6}}>
+              Challenge-Level: <span className="syne">{challengeLevel}</span> ({aggregate.challenge}/100)
+            </div>
+            <div style={{fontSize:12,lineHeight:1.55,color:"#2A2F32"}}>
+              {aggregate.challenge >= 75 && (
+                <>Die Anlage bietet ausgeprägte Mutproben und herausfordernde Elemente – geeignet für ältere Kinder und Jugendliche, die sich motorisch und mental fordern wollen. Solche Anlagen sind essenziell für die Entwicklung von Selbstwirksamkeit und realistischer Risikoeinschätzung.</>
+              )}
+              {aggregate.challenge >= 55 && aggregate.challenge < 75 && (
+                <>Die Anlage ist ausgewogen fordernd: Sie bietet genügend Herausforderungen für geübte Kinder, ohne ungeübte zu überfordern. Das ist der pädagogisch wertvollste Bereich – ein Spielplatz, der mitwächst.</>
+              )}
+              {aggregate.challenge >= 35 && aggregate.challenge < 55 && (
+                <>Die Anlage bietet moderate Herausforderungen, ideal für die Hauptnutzergruppe der {ages.join(" und ") || "genannten Altersgruppen"}.</>
+              )}
+              {aggregate.challenge < 35 && (
+                <>Die Anlage ist bewusst zurückhaltend und niederschwellig gestaltet – angemessen für Kleinkinder und sensorisch empfindliche Nutzende.</>
+              )}
+              {challengeEquipment.length > 0 && (
+                <> Besonders anspruchsvolle Elemente: <em>{challengeEquipment.slice(0, 3).map(c => c.eq.name.replace(/^KOMPAN |^HAGS /, "")).join(", ")}</em>.</>
+              )}
+            </div>
+          </div>
+
+          {/* Top-5 Geräte Tabelle */}
+          {topEquipment.length > 0 && (
+            <>
+              <h3 style={{fontSize:13,fontWeight:700,color:T.green,marginTop:20,marginBottom:10}}>Top-Geräte nach Spielwert</h3>
+              <p style={pStyle}>Die folgenden Geräte tragen den grössten Beitrag zum Gesamt-Spielwert der Anlage bei:</p>
+              <div style={{display:"grid",gap:10,marginBottom:14}}>
+                {topEquipment.map((s, idx) => (
+                  <div key={s.eq.id} style={{border:`1px solid ${T.border}`,borderRadius:8,padding:"12px 14px",background:"white"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,marginBottom:6}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:700}}>
+                          <span style={{color:T.gold,marginRight:6}}>#{idx+1}</span>
+                          {s.eq.name.replace(/^KOMPAN |^HAGS /, "")}
+                        </div>
+                        <div style={{fontSize:10.5,color:T.muted,fontFamily:"monospace"}}>{ICONS[s.eq.cat]} {s.eq.cat}{s.eq.artNr ? ` · ${s.eq.artNr}`: ""}</div>
+                      </div>
+                      <div className="syne" style={{fontWeight:800,color:T.green,fontSize:16,flexShrink:0}}>
+                        {Math.round(s.total * 100 / 30)}<span style={{fontSize:10,color:T.muted}}>/100</span>
+                      </div>
+                    </div>
+                    {/* Sterne-Rating pro Dimension */}
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(6, 1fr)",gap:4,fontSize:9.5,color:T.muted,marginBottom:s.highlights.length>0?6:0}}>
+                      {[
+                        {k:"social",l:"Sozial"},
+                        {k:"motor",l:"Motor"},
+                        {k:"vestibular",l:"Gleichg."},
+                        {k:"challenge",l:"Challenge"},
+                        {k:"creative",l:"Kreativ"},
+                        {k:"inclusive",l:"Inklusiv"},
+                      ].map(d => (
+                        <div key={d.k} style={{textAlign:"center"}}>
+                          <div style={{fontWeight:700,color:"#1B4332",fontSize:11}}>{"★".repeat(s[d.k])}<span style={{color:"#ccc"}}>{"★".repeat(5-s[d.k])}</span></div>
+                          <div>{d.l}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* Highlights */}
+                    {s.highlights.length > 0 && (
+                      <div style={{borderTop:`1px solid ${T.border}`,paddingTop:6,fontSize:10.5,color:"#3A4F2A",lineHeight:1.5}}>
+                        {s.highlights.map((h, i) => <div key={i}>• {h}</div>)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* Zusammenfassende Bewertung */}
+          <div style={{background:"#F4F1EC",borderLeft:`3px solid ${T.gold}`,padding:"16px 20px",borderRadius:"0 6px 6px 0",marginTop:14,fontStyle:"italic",fontSize:12.5,lineHeight:1.65}}>
+            <strong style={{color:T.green,fontStyle:"normal"}}>Fazit der Spielwert-Analyse:</strong> Mit einem Gesamtwert von {overallPlayValue}/100 {overallPlayValue>=75?"erreicht die Anlage ein überdurchschnittliches Spielwert-Niveau und erfüllt die Ansprüche einer modernen, pädagogisch reflektierten Spielplatz-Gestaltung.":overallPlayValue>=60?"zeigt die Anlage ein ausgewogenes Spielwert-Profil mit deutlichen Stärken in einzelnen Dimensionen.":overallPlayValue>=45?"bildet die Anlage eine solide Grundlage, bietet aber noch Ausbauoptionen in einzelnen Spielwert-Dimensionen.":"besteht bei der Anlage noch Potenzial für eine Erweiterung des Spielangebots."} Das Verhältnis von sozialen Spielangeboten ({aggregate.social}/100), motorischer Förderung ({aggregate.motor}/100) und kreativer Rollenspielmöglichkeiten ({aggregate.creative}/100) zeigt das spezifische Charakterprofil dieser Planung.
+          </div>
+
+          {/* Page break */}
+          <div className="page-break"></div>
+
+          {/* 6. Zonierung */}
+          <h2 className="syne" style={hStyle}>6. Räumliche Gliederung</h2>
           <p style={pStyle}>{zoning}</p>
 
-          {/* 6. Material */}
-          <h2 className="syne" style={hStyle}>6. Materialwahl und Konstruktion</h2>
+          {/* 7. Material */}
+          <h2 className="syne" style={hStyle}>7. Materialwahl und Konstruktion</h2>
           <p style={pStyle}>{materialText}</p>
           <p style={pStyle}>{floorText}</p>
 
-          {/* 7. Sicherheit */}
-          <h2 className="syne" style={hStyle}>7. Sicherheitskonzept</h2>
+          {/* 8. Sicherheit */}
+          <h2 className="syne" style={hStyle}>8. Sicherheitskonzept</h2>
           <p style={pStyle}>{safety}</p>
 
-          {/* 8. Inklusion */}
-          <h2 className="syne" style={hStyle}>8. Inklusion und Barrierefreiheit</h2>
+          {/* 9. Inklusion */}
+          <h2 className="syne" style={hStyle}>9. Inklusion und Barrierefreiheit</h2>
           <p style={pStyle}>{inclusion}</p>
 
-          {/* 9. Nachhaltigkeit */}
-          <h2 className="syne" style={hStyle}>9. Nachhaltigkeit</h2>
+          {/* 10. Nachhaltigkeit */}
+          <h2 className="syne" style={hStyle}>10. Nachhaltigkeit</h2>
           <p style={pStyle}>{sustain}</p>
 
-          {/* 10. Betrieb */}
-          <h2 className="syne" style={hStyle}>10. Betrieb und Unterhalt</h2>
+          {/* 11. Betrieb */}
+          <h2 className="syne" style={hStyle}>11. Betrieb und Unterhalt</h2>
           <p style={pStyle}>{maintenance}</p>
 
-          {/* 11. Fazit */}
-          <h2 className="syne" style={hStyle}>11. Ausblick</h2>
+          {/* 12. Fazit */}
+          <h2 className="syne" style={hStyle}>12. Ausblick</h2>
           <p style={{...pStyle,fontStyle:"italic",background:"#F4F1EC",padding:"18px 22px",borderLeft:`3px solid ${T.gold}`,borderRadius:"0 6px 6px 0"}}>{conclusion}</p>
         </div>
 
