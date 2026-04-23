@@ -26,12 +26,12 @@ const G = `
 `;
 
 /* ═══════════════════════════ MOCK DATA ═══════════════════════════ */
-const CATS = ["Schaukeln","Rutschen","Klettern","Sandspiel","Wipptiere","Karussell","Balancieren","Spielhäuser","Fallschutz"];
+const CATS = ["Schaukeln","Rutschen","Klettern","Spieltürme","Sandspiel","Wipptiere","Karussell","Balancieren","Spielhäuser","Fallschutz"];
 const AGES = ["Kleinkinder (1–3)","Kindergarten (3–6)","Schulkinder (6–12)","Jugendliche (12+)","Altersgemischt"];
 const MATS = ["Robinie","Douglasie","KDI","Edelstahl","Pulverbeschichtet","Kombiniert"];
 const FLOOR = ["Wiese (gebunden)","EPDM (gebunden)","Fallschutzplatten (gebunden)","Holzschnitzel (lose)","Rundkies (lose)"];
 const LOCTYPES = ["Schule","Gemeindeplatz","Wohnüberbauung","Kirche","Restaurant","Schwimmbad","MFH","Privat"];
-const ICONS = { Schaukeln:"🪢",Rutschen:"🛝",Klettern:"🧗",Sandspiel:"🏖",Wipptiere:"🐴",Karussell:"🎠",Balancieren:"⚖️",Spielhäuser:"🏠",Fallschutz:"🟩" };
+const ICONS = { Schaukeln:"🪢",Rutschen:"🛝",Klettern:"🧗",Spieltürme:"🏯",Sandspiel:"🏖",Wipptiere:"🐴",Karussell:"🎠",Balancieren:"⚖️",Spielhäuser:"🏠",Fallschutz:"🟩" };
 // Inline-SVG icons rendered inside Leaflet markers (crisp & scalable, always white on colored bg)
 const SVG_ICONS = {
   Schaukeln: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4 L12 12 L20 4"/><line x1="12" y1="12" x2="12" y2="17"/><line x1="9" y1="17" x2="15" y2="17"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="9" y1="17" x2="9" y2="20"/><line x1="15" y1="17" x2="15" y2="20"/></svg>`,
@@ -44,7 +44,7 @@ const SVG_ICONS = {
   Spielhäuser: `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12 L12 3 L21 12"/><path d="M5 10 L5 21 L19 21 L19 10"/><rect x="10" y="14" width="4" height="7"/></svg>`,
   Fallschutz: `<svg viewBox="0 0 24 24" width="22" height="22" fill="white" stroke="white" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2" opacity=".7"/></svg>`,
 };
-const CAT_COLORS = { Schaukeln:"#3B82F6",Rutschen:"#EF4444",Klettern:"#8B5CF6",Sandspiel:"#F59E0B",Wipptiere:"#10B981",Karussell:"#EC4899",Balancieren:"#6366F1",Spielhäuser:"#D97706",Fallschutz:"#059669" };
+const CAT_COLORS = { Schaukeln:"#3B82F6",Rutschen:"#EF4444",Klettern:"#8B5CF6",Spieltürme:"#B45309",Sandspiel:"#F59E0B",Wipptiere:"#10B981",Karussell:"#EC4899",Balancieren:"#6366F1",Spielhäuser:"#D97706",Fallschutz:"#059669" };
 const DYNAMIC_CATS = ["Schaukeln","Wipptiere","Karussell","Rutschen"];
 
 const initEquipment = [
@@ -185,14 +185,51 @@ const initEquipment = [
   { id:945, artNr:"MSC5422",    name:"KOMPAN Minischloss mit Kletterwand",    cat:"Spielhäuser", age:"Kleinkinder (1–3)",  mat:"Kombiniert",mfr:5, price:6250,  fallZone:1.5, size:[4.0,3.5], color:"#D97706", icon:"🏠", desc:"Minischloss mit Kletterwand. 20,4m². 12 Nutzer." },
   { id:946, artNr:"MSC5424",    name:"KOMPAN 2-Turm-Minischloss",             cat:"Spielhäuser", age:"Kleinkinder (1–3)",  mat:"Kombiniert",mfr:5, price:9460,  fallZone:1.5, size:[5.0,4.0], color:"#D97706", icon:"🏠", desc:"2-Turm-Minischloss. 25,1m². 15 Nutzer." },
   { id:947, artNr:"MSC5417",    name:"KOMPAN Minischloss",                    cat:"Spielhäuser", age:"Kleinkinder (1–3)",  mat:"Kombiniert",mfr:5, price:6380,  fallZone:1.5, size:[4.0,3.5], color:"#D97706", icon:"🏠", desc:"Minischloss. 19,7m². 8 Nutzer." },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // KOMPAN Spieltürme & Kletterkomplexe (Moments + Elephant Play + Corocord)
+  // ══════════════════════════════════════════════════════════════════════════
+  { id:1001, artNr:"FRE2057",   name:"KOMPAN Spielturm 'Fort' mit Rutsche",        cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Robinie+Stahl", mfr:5, price:18500, fallZone:2.0, size:[5.5,4.5], color:"#B45309", icon:"🏯", desc:"Moments-Themenspielturm 'Fort', H:2,8m, Plattform, Rutsche, Kletterwand. 36m². 20 Nutzer." },
+  { id:1002, artNr:"FRE2034",   name:"KOMPAN Spielturm 'Leuchtturm'",              cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Kombiniert", mfr:5, price:24600, fallZone:2.5, size:[4.0,4.0], color:"#B45309", icon:"🏯", desc:"Moments 'Leuchtturm' rot-weiß, H:4,5m, Aussichtsplattform, Wendeltreppe. 22m². 16 Nutzer." },
+  { id:1003, artNr:"ELE400023", name:"KOMPAN Baumhaus 3-stöckig",                  cat:"Spieltürme", age:"Altersgemischt",     mat:"Robinie", mfr:5, price:32800, fallZone:2.5, size:[6.0,5.5], color:"#8B4513", icon:"🌳", desc:"ElephantPlay Baumhaus mit 3 Ebenen, Rutsche, Netztunnel, Hängebrücke. 48m². 25 Nutzer." },
+  { id:1004, artNr:"KPL310",    name:"KOMPAN Kastell 4-Turm",                      cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Kombiniert", mfr:5, price:42500, fallZone:2.5, size:[8.0,6.5], color:"#D97706", icon:"🏰", desc:"ElephantPlay 4-Turm-Kastell, H:3,5m, verbundene Plattformen, Zugbrücke, 2 Rutschen. 68m². 40 Nutzer." },
+  { id:1005, artNr:"FRE2015",   name:"KOMPAN 'Waldhaus' mit Kletterwand",          cat:"Spieltürme", age:"Kindergarten (3–6)", mat:"Robinie", mfr:5, price:12400, fallZone:1.5, size:[4.5,3.5], color:"#8B4513", icon:"🏡", desc:"Moments Waldhaus, H:1,8m, Kletterwand, Rutsche, Sandkasten unten. 25m². 12 Nutzer." },
+  { id:1006, artNr:"FRE2019",   name:"KOMPAN 'Haus im Baum' Kindergarten",         cat:"Spieltürme", age:"Kindergarten (3–6)", mat:"Robinie", mfr:5, price:14600, fallZone:1.5, size:[5.0,4.0], color:"#8B4513", icon:"🏡", desc:"Moments Baumhaus kleiner Maßstab, H:1,8m, Leiter, Rutsche. 28m². 15 Nutzer." },
+  { id:1007, artNr:"COR30300",  name:"KOMPAN Seilpyramide 'Corocord' 5m",          cat:"Spieltürme", age:"Altersgemischt",     mat:"Stahl+Seil", mfr:5, price:28900, fallZone:3.0, size:[7.0,7.0], color:"#DC2626", icon:"🕸", desc:"Corocord Seilpyramide Höhe 5m, 4-Punkt-Pfosten, 3D-Kletternetz. 80m². 30 Nutzer." },
+  { id:1008, artNr:"COR30500",  name:"KOMPAN Seilpyramide 'Corocord' 7,5m",        cat:"Spieltürme", age:"Altersgemischt",     mat:"Stahl+Seil", mfr:5, price:48500, fallZone:3.5, size:[10.0,10.0], color:"#DC2626", icon:"🕸", desc:"Corocord XXL-Seilpyramide 7,5m. 125m². 50 Nutzer." },
+  { id:1009, artNr:"CRP10210",  name:"KOMPAN 'Rope Park' Kletteranlage",           cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Stahl+Seil", mfr:5, price:38200, fallZone:2.5, size:[12.0,5.0], color:"#DC2626", icon:"🧗", desc:"Corocord Rope Park, 4 Pfosten mit Seilbrücken, Kletternetzen, Balance-Elementen. 90m². 25 Nutzer." },
+  { id:1010, artNr:"GXY910",    name:"KOMPAN 'Galaxy' Spielturm Multifunktion",    cat:"Spieltürme", age:"Altersgemischt",     mat:"Edelstahl", mfr:5, price:29800, fallZone:2.5, size:[6.5,5.0], color:"#374151", icon:"🛰", desc:"Galaxy-Multi Turm, modernes Design Edelstahl, Rutsche, Feuerwehrstange, Netzwand. 48m². 20 Nutzer." },
+  { id:1011, artNr:"KPL190",    name:"KOMPAN 'Piratenschiff' Spielanlage",         cat:"Spieltürme", age:"Kindergarten (3–6)", mat:"Robinie", mfr:5, price:19600, fallZone:1.5, size:[7.0,3.5], color:"#8B4513", icon:"⛵", desc:"ElephantPlay Piratenschiff, Mast, Kapitänsbrücke, Rutsche. 35m². 18 Nutzer." },
+  { id:1012, artNr:"MSC5500",   name:"KOMPAN 'Wolkenturm' Kletterkomplex",         cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Kombiniert", mfr:5, price:34500, fallZone:2.5, size:[7.5,5.5], color:"#7C3AED", icon:"☁", desc:"Moments Wolkenturm H:3,2m, 2 Plattformen, Rutsche, Kletternetz, Seilrutsche. 55m². 22 Nutzer." },
+  { id:1013, artNr:"FRE2080",   name:"KOMPAN 'Zugsystem' Lokomotive + 2 Waggons",  cat:"Spieltürme", age:"Kleinkinder (1–3)",  mat:"Robinie", mfr:5, price:16800, fallZone:1.0, size:[8.0,2.5], color:"#8B4513", icon:"🚂", desc:"Moments Eisenbahn: Lokomotive+2 Waggons, niedrige Kletterhöhen. 30m². 15 Nutzer." },
+  { id:1014, artNr:"COR30230",  name:"KOMPAN Corocord Kletterschiff",              cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Stahl+Seil", mfr:5, price:26500, fallZone:2.5, size:[8.5,4.0], color:"#DC2626", icon:"⛵", desc:"Corocord Themenschiff aus Seil+Stahl, komplett begehbar. 45m². 25 Nutzer." },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // HAGS (Schweden) – Spieltürme und Themenwelten
+  // ══════════════════════════════════════════════════════════════════════════
+  { id:2001, artNr:"HAGS-UP10", name:"HAGS UniPlay Basisturm 1,2m",                cat:"Spieltürme", age:"Kindergarten (3–6)", mat:"Kombiniert", mfr:6, price:8900,  fallZone:1.5, size:[2.5,2.5], color:"#0EA5E9", icon:"🏯", desc:"UniPlay-Modulturm Plattform 1,2m, Dach, Leiter, Rutsche 1,2m. 16m². 8 Nutzer." },
+  { id:2002, artNr:"HAGS-UP20", name:"HAGS UniPlay Doppelturm 1,8m",               cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"Kombiniert", mfr:6, price:14500, fallZone:2.0, size:[4.5,3.5], color:"#0EA5E9", icon:"🏯", desc:"UniPlay 2 Türme verbunden via Hängebrücke, Rutsche 1,8m. 26m². 14 Nutzer." },
+  { id:2003, artNr:"HAGS-UP30", name:"HAGS UniPlay Großer Turmkomplex",            cat:"Spieltürme", age:"Altersgemischt",     mat:"Kombiniert", mfr:6, price:28900, fallZone:2.5, size:[7.0,5.5], color:"#0EA5E9", icon:"🏯", desc:"UniPlay 3 Türme, 2 Rutschen, Kletternetz, Feuerwehrstange. 52m². 24 Nutzer." },
+  { id:2004, artNr:"HAGS-TH50", name:"HAGS Themenwelt 'Waldhaus'",                 cat:"Spieltürme", age:"Kindergarten (3–6)", mat:"HPL+Robinie", mfr:6, price:22400, fallZone:1.8, size:[5.5,4.5], color:"#16A34A", icon:"🌲", desc:"Waldthemen-Spielturm, HPL-Fassade mit Blätter-Muster, Kriechtunnel, Rutsche. 34m². 16 Nutzer." },
+  { id:2005, artNr:"HAGS-TH80", name:"HAGS Themenwelt 'Burg'",                     cat:"Spieltürme", age:"Schulkinder (6–12)", mat:"HPL+Stahl", mfr:6, price:36500, fallZone:2.2, size:[7.5,6.5], color:"#64748B", icon:"🏰", desc:"Mittelalterliche Burg mit 2 Türmen, Zinnen, Verbindungsmauer, Rutsche. 62m². 28 Nutzer." },
+  { id:2006, artNr:"HAGS-NC12", name:"HAGS 'NatureClimb' Baumstamm-Kletter",       cat:"Klettern",   age:"Altersgemischt",     mat:"Robinie", mfr:6, price:11200, fallZone:1.5, size:[5.0,2.5], color:"#8B4513", icon:"🧗", desc:"Natur-Kletteranlage aus Robinienstämmen verschiedener Höhen. 22m². 10 Nutzer." },
+  { id:2007, artNr:"HAGS-RO10", name:"HAGS Seilstern Ø4m",                         cat:"Klettern",   age:"Altersgemischt",     mat:"Stahl+Seil", mfr:6, price:9800,  fallZone:2.0, size:[5.0,5.0], color:"#DC2626", icon:"⭐", desc:"Seilstern 4m-Durchmesser, zentraler Mast, 6 Speichen. 20m². 12 Nutzer." },
+  { id:2008, artNr:"HAGS-RO30", name:"HAGS Seilpyramide 4,5m",                     cat:"Spieltürme", age:"Altersgemischt",     mat:"Stahl+Seil", mfr:6, price:22500, fallZone:2.8, size:[6.5,6.5], color:"#DC2626", icon:"🕸", desc:"Seilpyramide H:4,5m, 4 Eckpfosten, 3D-Netzstruktur. 75m². 25 Nutzer." },
+  { id:2009, artNr:"HAGS-SW11", name:"HAGS 'Nuclear' Single-Swing Robinie",        cat:"Schaukeln",  age:"Schulkinder (6–12)", mat:"Robinie", mfr:6, price:1950,  fallZone:2.5, size:[3.5,1.0], color:"#8B4513", icon:"🏗", desc:"Klassische Einzelschaukel Robinie, H:2,5m. 24m². 1 Nutzer." },
+  { id:2010, artNr:"HAGS-SW22", name:"HAGS 'Nuclear' Doppelschaukel Robinie",      cat:"Schaukeln",  age:"Schulkinder (6–12)", mat:"Robinie", mfr:6, price:2850,  fallZone:2.5, size:[4.5,1.0], color:"#8B4513", icon:"🏗", desc:"Doppelschaukel Robinie 2 Sitze, H:2,5m. 28m². 2 Nutzer." },
+  { id:2011, artNr:"HAGS-SL30", name:"HAGS Röhrenrutsche 2,5m",                    cat:"Rutschen",   age:"Schulkinder (6–12)", mat:"Edelstahl", mfr:6, price:5200,  fallZone:2.0, size:[5.0,1.2], color:"#B91C1C", icon:"🛝", desc:"Röhrenrutsche Edelstahl 2,5m Höhe, geschlossen. 12m². 1 Nutzer." },
+  { id:2012, artNr:"HAGS-CA14", name:"HAGS Karussell 'Spin' Ø1,8m",                cat:"Karussell",  age:"Altersgemischt",     mat:"Edelstahl", mfr:6, price:3650,  fallZone:3.0, size:[2.2,2.2], color:"#475569", icon:"🎠", desc:"Drehteller Edelstahl 1,8m, Antirutschbelag. 14m². 6 Nutzer." },
+  { id:2013, artNr:"HAGS-SP10", name:"HAGS Balancier-Parcours 6-teilig",           cat:"Balancieren",age:"Altersgemischt",     mat:"Robinie", mfr:6, price:6800,  fallZone:1.0, size:[8.0,2.0], color:"#6366F1", icon:"⚖️", desc:"6 Balance-Elemente Robinie: Balken, Wippen, Stelzen. 20m². 6 Nutzer." },
+  { id:2014, artNr:"HAGS-HS20", name:"HAGS 'Hideout' Spielhaus mit Plattform",     cat:"Spielhäuser",age:"Kindergarten (3–6)", mat:"HPL+Robinie", mfr:6, price:9200,  fallZone:1.0, size:[3.5,3.0], color:"#16A34A", icon:"🏠", desc:"Spielhaus mit Satteldach, erhöhter Plattform, Leiter. 14m². 8 Nutzer." },
 ];
 
 const initManufacturers = [
   { id:1, name:"Berliner Seilfabrik",  country:"DE", contact:"info@bsf.de",           web:"berliner-seilfabrik.de",  note:"Premium Seilspielgeräte" },
-  { id:2, name:"Lappset Group",        country:"FI", contact:"info@lappset.com",      web:"lappset.com",             note:"Innovative Spielkonzepte" },
-  { id:3, name:"Richter Spielgeräte",  country:"DE", contact:"info@richter.de",       web:"richter-spielgeraete.de", note:"Klassische Holzgeräte" },
+  { id:2, name:"Lappset Group",        country:"FI", contact:"info@lappset.com",      web:"lappset.com",             note:"Innovative Spielkonzepte, Finnland" },
+  { id:3, name:"Richter Spielgeräte",  country:"DE", contact:"info@richter.de",       web:"richter-spielgeraete.de", note:"Klassische Holzgeräte, Robinie-Spezialist" },
   { id:4, name:"Playparc",             country:"DE", contact:"info@playparc.de",      web:"playparc.de",             note:"Fallschutz & Beläge" },
   { id:5, name:"KOMPAN",               country:"DK", contact:"info@kompan.de",        web:"kompan.com",              note:"Weltweiter Marktführer Spielplatzgeräte. Schaukeln, Klettergeräte, Karussells, Sportgeräte." },
+  { id:6, name:"HAGS",                 country:"SE", contact:"info@hags.com",         web:"hags.com",                note:"Schwedischer Premium-Hersteller. 'UniPlay'-Spieltürme, Seilspielplätze, Themenwelten. 3D-Modelle auf hags.com/3d" },
 ];
 
 const initProjects = [
@@ -393,7 +430,7 @@ function Dashboard({equipment,manufacturers,projects,setPage,setActiveProjectId}
 }
 
 /* ═══════════════════════════ CATALOG ═══════════════════════════ */
-function Catalog({equipment,setEquipment,manufacturers}) {
+function Catalog({equipment,setEquipment,manufacturers,catalogFilter,setCatalogFilter}) {
   const [search,setSearch]=useState("");
   const [filters,setFilters]=useState({cat:"Alle",age:"Alle",mat:"Alle",mfr:"Alle",priceMin:"",priceMax:""});
   const [sort,setSort]=useState("name-asc");
@@ -401,6 +438,13 @@ function Catalog({equipment,setEquipment,manufacturers}) {
   const [showForm,setShowForm]=useState(false);
   const [editing,setEditing]=useState(null);
   const [form,setForm]=useState({name:"",cat:"Schaukeln",age:"Altersgemischt",mat:"Robinie",mfr:1,price:0,fallZone:1.5,desc:"",size:[2,2]});
+
+  // Wenn Catalog mit Hersteller-Filter aufgerufen wird, die Filter-Struktur setzen
+  useEffect(()=>{
+    if (catalogFilter?.mfr) {
+      setFilters(f => ({ ...f, mfr: String(catalogFilter.mfr) }));
+    }
+  }, [catalogFilter]);
 
   const allMats=[...new Set(equipment.map(e=>e.mat))].sort();
   const activeFilterCount=[filters.cat!=="Alle",filters.age!=="Alle",filters.mat!=="Alle",filters.mfr!=="Alle",filters.priceMin!=="",filters.priceMax!==""].filter(Boolean).length;
@@ -430,7 +474,7 @@ function Catalog({equipment,setEquipment,manufacturers}) {
     }
   });
 
-  function resetFilters(){ setFilters({cat:"Alle",age:"Alle",mat:"Alle",mfr:"Alle",priceMin:"",priceMax:""}); setSearch(""); }
+  function resetFilters(){ setFilters({cat:"Alle",age:"Alle",mat:"Alle",mfr:"Alle",priceMin:"",priceMax:""}); setSearch(""); if(setCatalogFilter)setCatalogFilter(null); }
   function openEdit(e) { setEditing(e.id); setForm({...e}); setShowForm(true); }
   function openNew() { setEditing(null); setForm({name:"",cat:"Schaukeln",age:"Altersgemischt",mat:"Robinie",mfr:1,price:0,fallZone:1.5,desc:"",size:[2,2]}); setShowForm(true); }
   function save() {
@@ -444,6 +488,23 @@ function Catalog({equipment,setEquipment,manufacturers}) {
 
   return (
     <div className="fade-in">
+      {/* Manufacturer Filter Banner — sichtbar wenn man aus Hersteller-Seite kommt */}
+      {catalogFilter?.mfr && (
+        <div style={{background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenLight} 100%)`,color:"white",borderRadius:12,padding:"14px 20px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 4px 12px rgba(27,67,50,.2)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{fontSize:28}}>🏭</div>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,opacity:.85}}>Gefilterter Katalog</div>
+              <div className="syne" style={{fontSize:18,fontWeight:800}}>Alle Geräte von {catalogFilter.mfrName}</div>
+            </div>
+          </div>
+          <button onClick={()=>{setCatalogFilter(null);setFilters(f=>({...f,mfr:"Alle"}));}}
+            style={{padding:"6px 14px",border:"1.5px solid white",background:"transparent",color:"white",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",borderRadius:7}}>
+            ✕ Filter entfernen
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
         <div>
@@ -619,35 +680,120 @@ function Catalog({equipment,setEquipment,manufacturers}) {
 }
 
 /* ═══════════════════════════ MANUFACTURERS ═══════════════════════════ */
-function Manufacturers({manufacturers,setManufacturers}) {
+function Manufacturers({manufacturers,setManufacturers,equipment,setPage,setCatalogFilter}) {
   const [showForm,setShowForm]=useState(false);
   const [form,setForm]=useState({name:"",country:"DE",contact:"",web:"",note:""});
+  const [hoveredId,setHoveredId]=useState(null);
   function save(){setManufacturers(p=>[...p,{...form,id:Date.now()}]);setShowForm(false);setForm({name:"",country:"DE",contact:"",web:"",note:""});}
+
+  // Statistiken pro Hersteller: Anzahl Geräte, Kategorien, Preisbereich
+  function stats(mfrId) {
+    const items = equipment.filter(e => e.mfr === mfrId);
+    const cats = [...new Set(items.map(e => e.cat))];
+    if (items.length === 0) return { count: 0, cats: [], min: 0, max: 0 };
+    const prices = items.map(e => e.price).filter(p => p > 0);
+    return {
+      count: items.length,
+      cats,
+      min: Math.min(...prices),
+      max: Math.max(...prices),
+    };
+  }
+
+  // Zum Katalog mit Hersteller-Filter
+  function openCatalog(mfr) {
+    setCatalogFilter({ mfr: mfr.id, mfrName: mfr.name });
+    setPage("catalog");
+  }
+
+  // Länderflaggen
+  const flags = { DE: "🇩🇪", CH: "🇨🇭", AT: "🇦🇹", LI: "🇱🇮", FI: "🇫🇮", DK: "🇩🇰", SE: "🇸🇪", NO: "🇳🇴", PL: "🇵🇱", NL: "🇳🇱", FR: "🇫🇷", IT: "🇮🇹", UK: "🇬🇧" };
+
   return (
     <div className="fade-in">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <div><div className="syne" style={{fontSize:24,fontWeight:800}}>Hersteller</div><div style={{color:T.muted,fontSize:13}}>Herstellerverwaltung</div></div>
+        <div>
+          <div className="syne" style={{fontSize:24,fontWeight:800}}>Hersteller</div>
+          <div style={{color:T.muted,fontSize:13}}>Klicke auf eine Karte, um den Gerätekatalog des Herstellers zu sehen</div>
+        </div>
         <Btn onClick={()=>setShowForm(true)}>+ Hersteller</Btn>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14}}>
-        {manufacturers.map(m=>(
-          <Card key={m.id} style={{padding:20}}>
-            <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:12}}>
-              <div style={{width:46,height:46,borderRadius:12,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🏭</div>
-              <div><div style={{fontWeight:700,fontSize:15}}>{m.name}</div>
-              <div style={{fontSize:12,color:T.muted}}>{m.country} · {m.web}</div></div>
-            </div>
-            {m.note&&<div style={{background:T.bg,borderRadius:8,padding:"8px 12px",fontSize:12,color:T.muted,marginBottom:10}}>{m.note}</div>}
-            <div style={{fontSize:12,color:T.muted}}>✉️ {m.contact}</div>
-          </Card>
-        ))}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:14}}>
+        {manufacturers.map(m=>{
+          const s = stats(m.id);
+          const isHovered = hoveredId === m.id;
+          const clickable = s.count > 0;
+          return (
+            <Card key={m.id}
+              onMouseEnter={()=>setHoveredId(m.id)}
+              onMouseLeave={()=>setHoveredId(null)}
+              onClick={clickable ? ()=>openCatalog(m) : undefined}
+              style={{
+                padding:20,
+                cursor: clickable ? "pointer" : "default",
+                borderColor: isHovered && clickable ? T.green : T.border,
+                transform: isHovered && clickable ? "translateY(-2px)" : "translateY(0)",
+                boxShadow: isHovered && clickable ? "0 6px 18px rgba(27, 67, 50, .15)" : "0 2px 6px rgba(0,0,0,.05)",
+                transition:"all .18s ease",
+              }}>
+              <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:12}}>
+                <div style={{width:52,height:52,borderRadius:12,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,flexShrink:0}}>🏭</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:15,display:"flex",alignItems:"center",gap:6}}>
+                    <span>{flags[m.country]||"🏳️"}</span>
+                    <span>{m.name}</span>
+                  </div>
+                  <div style={{fontSize:12,color:T.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.web}</div>
+                </div>
+              </div>
+              {m.note&&<div style={{background:T.bg,borderRadius:8,padding:"8px 12px",fontSize:11.5,color:T.muted,marginBottom:10,lineHeight:1.45}}>{m.note}</div>}
+
+              {/* Statistik-Bar */}
+              {s.count > 0 ? (
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:`linear-gradient(90deg, ${T.green}11, ${T.green}05)`,padding:"8px 12px",borderRadius:8,marginBottom:8,border:`1px solid ${T.green}22`}}>
+                  <div>
+                    <div className="syne" style={{fontSize:20,fontWeight:800,color:T.green,lineHeight:1}}>{s.count}</div>
+                    <div style={{fontSize:10,color:T.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:.5}}>Geräte</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:11,color:T.muted,fontWeight:600}}>CHF {s.min.toLocaleString()} – {s.max.toLocaleString()}</div>
+                    <div style={{fontSize:10,color:T.muted,marginTop:1}}>{s.cats.length} Kategorien</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{fontSize:11,color:T.muted,fontStyle:"italic",padding:"4px 0"}}>Noch keine Geräte im Katalog</div>
+              )}
+
+              {/* Kategorien als Chips */}
+              {s.cats.length > 0 && (
+                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
+                  {s.cats.slice(0, 6).map(c=>(
+                    <span key={c} style={{fontSize:10.5,background:T.bg,border:`1px solid ${T.border}`,borderRadius:5,padding:"2px 7px",color:T.muted,fontWeight:600}}>
+                      {ICONS[c]} {c}
+                    </span>
+                  ))}
+                  {s.cats.length > 6 && <span style={{fontSize:10.5,color:T.muted,fontStyle:"italic"}}>+{s.cats.length - 6}</span>}
+                </div>
+              )}
+
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.muted,marginTop:4}}>
+                <span>✉️ {m.contact}</span>
+                {clickable && (
+                  <span style={{color:T.green,fontWeight:700,fontSize:11}}>
+                    Katalog öffnen →
+                  </span>
+                )}
+              </div>
+            </Card>
+          );
+        })}
       </div>
       {showForm&&(
         <Modal title="Neuer Hersteller" onClose={()=>setShowForm(false)}>
           <div style={{display:"grid",gap:12}}>
             <Input label="Name" value={form.name} onChange={v=>setForm(f=>({...f,name:v}))} required/>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-              <Input label="Land (DE/CH/AT)" value={form.country} onChange={v=>setForm(f=>({...f,country:v}))}/>
+              <Input label="Land (DE/CH/AT/SE/DK/FI)" value={form.country} onChange={v=>setForm(f=>({...f,country:v}))}/>
               <Input label="Website" value={form.web} onChange={v=>setForm(f=>({...f,web:v}))}/>
             </div>
             <Input label="Kontakt E-Mail" value={form.contact} onChange={v=>setForm(f=>({...f,contact:v}))}/>
@@ -1414,7 +1560,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
   const [renderStudioOpen,setRenderStudioOpen]=useState(false);
   // Fallschutz-Darstellung
   const [fpMerged,setFpMerged]=useState(true);  // true = verschmolzen (mit Puffer), false = einzeln pro Gerät
-  const [fpColor,setFpColor]=useState("#2A1F18"); // EPDM-Farbe (Bildschirm + Offerte-Info)
+  const [fpColor,setFpColor]=useState("#E8D4A2"); // Fallschutz-Farbe Default: Sand-Beige (Holzhäcksel-Optik)
   const [fpColorPickerOpen,setFpColorPickerOpen]=useState(false);
 
   const placed=project.placed||[];
@@ -1619,7 +1765,7 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
       const eq=equipment.find(x=>x.id===pl.eqId); if(!eq) return;
       if(!eq.fallZone||eq.fallZone<=0.6) return; // nur bei relevanter Fallhöhe
       const zone=calcFallZone(eq); if(!zone) return;
-      const fpStyle={ color:fpStrokeColor, weight:1, fillColor:fpColor, fillOpacity:.88, opacity:.9 };
+      const fpStyle={ color:fpStrokeColor, weight:1.2, fillColor:fpColor, fillOpacity:.65, opacity:.75 };
       if(zone.shape==="circle"){
         L.circle([pl.lat||projectCenter.lat,pl.lng||projectCenter.lng],{radius:zone.r+FP_BUFFER,...fpStyle}).addTo(fzLayer);
       } else {
@@ -1678,21 +1824,23 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
           width:0;height:0;border-left:6px solid transparent;
           border-right:6px solid transparent;border-bottom:8px solid #1B4332;
         "></div></div>`:"";
-      const iconContent=SVG_ICONS[eq.cat]||`<span style="font-size:21px">${eq.icon}</span>`;
+      const iconContent=SVG_ICONS[eq.cat]||`<span style="font-size:18px">${eq.icon}</span>`;
+      // Architektur-Plan-Stil: weisser Hintergrund, dünne farbige Outline, dunkles Icon
       const icon=L.divIcon({
         className:"",
         html:`<div style="position:relative;width:${baseSize}px;height:${baseSize}px;">
           ${arrow}
           <div style="
-            width:${baseSize}px;height:${baseSize}px;border-radius:50%;
-            background:${eq.color};
-            border:3px solid ${isSel?"#1B4332":"white"};
-            box-shadow:0 3px 10px rgba(0,0,0,0.35);
+            width:${baseSize}px;height:${baseSize}px;border-radius:8px;
+            background:rgba(255,255,255,0.92);
+            border:${isSel?"2.5px":"1.5px"} solid ${isSel?"#D4A853":eq.color||"#444"};
+            box-shadow:0 2px 6px rgba(0,0,0,0.18);
             display:flex;align-items:center;justify-content:center;
             cursor:grab;
-            transform:${isSel?"scale(1.15)":"scale(1)"} rotate(${rot}deg);
+            transform:${isSel?"scale(1.12)":"scale(1)"} rotate(${rot}deg);
             transition:transform .15s ease;
-          "><div style="transform:rotate(${-rot}deg);display:inline-flex;">${iconContent}</div></div>
+            color:#2A2A2A;
+          "><div style="transform:rotate(${-rot}deg);display:inline-flex;filter:grayscale(.3);">${iconContent}</div></div>
         </div>`,
         iconSize:[baseSize,baseSize], iconAnchor:[baseSize/2,baseSize/2],
       });
@@ -1743,28 +1891,46 @@ function Planner({project,equipment,setProjects,setPage,setActiveProjectId}) {
     obstacles.forEach(ob=>{
       if(ob.type==="tree"){
         const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
-        const icon=L.divIcon({
+        const r = ob.r || 3;
+        // Baumkrone als weicher grüner Filled-Circle (wie Landschaftsarchitektur-Plan)
+        L.circle([ob.lat,ob.lng],{
+          radius:r, color:"#5E7F3E", weight:1, fillColor:"#B8D590", fillOpacity:.55,
+          interactive:false,
+        }).addTo(obLayer);
+        // Innerer kleiner Circle = Stammzone mit Jahresringen
+        L.circle([ob.lat,ob.lng],{
+          radius:r*0.25, color:"#4A6B34", weight:1.2, fillColor:"transparent", fillOpacity:0,
+          interactive:false,
+        }).addTo(obLayer);
+        L.circle([ob.lat,ob.lng],{
+          radius:r*0.15, color:"#4A6B34", weight:1, fillColor:"transparent", fillOpacity:0,
+          interactive:false,
+        }).addTo(obLayer);
+        // Zentrum = kleiner dunkler Punkt (Stamm)
+        L.circleMarker([ob.lat,ob.lng],{
+          radius:2.5, color:"#3A4F2A", weight:0, fillColor:"#3A4F2A", fillOpacity:1,
+          interactive:false,
+        }).addTo(obLayer);
+        // Draggable Marker — fast unsichtbarer Click-Bereich in der Mitte + Label seitlich
+        const markerIcon=L.divIcon({
           className:"",
           html:`<div style="
-            width:38px;height:38px;border-radius:50%;
-            background:#065F46;border:3px solid ${isSel?"#D4A853":"white"};
-            box-shadow:0 3px 8px rgba(0,0,0,0.35);
-            display:flex;align-items:center;justify-content:center;
-            font-size:20px;cursor:grab;
-          ">🌳</div>`,
-          iconSize:[38,38], iconAnchor:[19,19],
+            width:${Math.max(18,Math.min(32,r*4))}px;height:${Math.max(18,Math.min(32,r*4))}px;
+            border-radius:50%;
+            border:${isSel?"2px dashed #D4A853":"1px dashed rgba(74,107,52,0.3)"};
+            background:transparent;cursor:grab;
+          "></div>`,
+          iconSize:[Math.max(18,Math.min(32,r*4)),Math.max(18,Math.min(32,r*4))],
+          iconAnchor:[Math.max(18,Math.min(32,r*4))/2,Math.max(18,Math.min(32,r*4))/2],
         });
-        const m=L.marker([ob.lat,ob.lng],{icon,draggable:true}).addTo(obLayer);
-        m.bindTooltip(`${ob.label} (Ø${(ob.r||3)*2}m)`,{direction:"top",offset:[0,-16]});
+        const m=L.marker([ob.lat,ob.lng],{icon:markerIcon,draggable:true}).addTo(obLayer);
+        const labelShort = ob.label && ob.label.length < 18 ? ob.label : "Baum";
+        m.bindTooltip(`${ob.label} (Ø${(r*2).toFixed(1)}m)`,{direction:"top",offset:[0,-r*2]});
         m.on("click",()=>setSelected({type:"ob",id:ob.id}));
         m.on("dragend",(e)=>{
           const ll=e.target.getLatLng();
           updateProject(p=>({...p,obstacles:p.obstacles.map(x=>x.id===ob.id?{...x,lat:ll.lat,lng:ll.lng}:x)}));
         });
-        // Tree crown circle
-        L.circle([ob.lat,ob.lng],{
-          radius:ob.r||3, color:"#065F46", weight:1.5, fillColor:"#10B981", fillOpacity:.22,
-        }).addTo(obLayer);
       } else if(ob.type==="greenArea" && ob.polygon){
         const isSel=selected&&selected.type==="ob"&&selected.id===ob.id;
         // Grünfläche (Wald, Park) — grüne transparente Zone, zur Info
@@ -2566,6 +2732,62 @@ out geom;`;
         const roof=new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.72,roofH,4),wood("#8B4513"));
         roof.position.y=baseH+roofH/2; roof.rotation.y=Math.PI/4; roof.castShadow=true; g.add(roof);
       }
+      else if(eq.cat==="Spieltürme"){
+        // Multi-Level Spielturm-Komplex: 2 Pfosten + Plattform + Dach + Rutsche + Kletternetz
+        const towerH = Math.max(height, 3.0);
+        const platformH = towerH * 0.45;
+        const postMat = metalPost(K.post);
+        const platMat = wood(K.plat);
+        const accentMat = plastic(K.accent);
+        const ropeMat = rubber(K.accent);
+        // 4 Hauptpfosten (dicker)
+        [[-w/2+0.3,-d/2+0.3],[w/2-0.3,-d/2+0.3],[-w/2+0.3,d/2-0.3],[w/2-0.3,d/2-0.3]].forEach(([x,z])=>{
+          const p=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,towerH,10),postMat);
+          p.position.set(x,towerH/2,z); p.castShadow=true; g.add(p);
+        });
+        // Plattform Ebene 1
+        const plat1 = new THREE.Mesh(new THREE.BoxGeometry(w*0.85,0.1,d*0.85),platMat);
+        plat1.position.y=platformH; plat1.castShadow=true; plat1.receiveShadow=true; g.add(plat1);
+        // Geländer um Plattform
+        [[-w*0.42,-d*0.42],[w*0.42,-d*0.42],[-w*0.42,d*0.42],[w*0.42,d*0.42]].forEach(([x,z])=>{
+          const r=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.7,6),accentMat);
+          r.position.set(x,platformH+0.35,z); g.add(r);
+        });
+        // Satteldach bei höheren Türmen
+        if (towerH > 2.8) {
+          const roofH = towerH * 0.25;
+          const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w,d)*0.65,roofH,4),wood("#8B4513"));
+          roof.position.y = towerH + roofH/2;
+          roof.rotation.y = Math.PI/4;
+          roof.castShadow = true;
+          g.add(roof);
+        }
+        // Rutsche auf einer Seite (seitlich unten)
+        const slideL = Math.max(1.2, platformH*1.4);
+        const slide = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.08,slideL),accentMat);
+        slide.position.set(w/2+0.3, platformH/2, 0);
+        slide.rotation.x = -Math.atan2(platformH,slideL*0.7);
+        slide.castShadow = true; g.add(slide);
+        // Slide side walls
+        [-0.3,0.3].forEach(x=>{
+          const wall=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.18,slideL),accentMat);
+          wall.position.set(w/2+0.3+x, platformH/2+0.1, 0);
+          wall.rotation.x = -Math.atan2(platformH,slideL*0.7);
+          g.add(wall);
+        });
+        // Kletternetz auf der anderen Seite
+        for(let i=0;i<5;i++){
+          const rope=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,platformH,6),ropeMat);
+          rope.position.set(-w/2-0.1, platformH/2, -d/2+0.3+i*(d-0.6)/4);
+          g.add(rope);
+        }
+        for(let j=0;j<4;j++){
+          const hrope=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,d-0.4,6),ropeMat);
+          hrope.rotation.x = Math.PI/2;
+          hrope.position.set(-w/2-0.1, 0.3+j*(platformH-0.3)/3, 0);
+          g.add(hrope);
+        }
+      }
       else if(eq.cat==="Klettern"){
         const frameH=Math.max(height,2.2);
         const postMat=metalPost(K.post);
@@ -2863,17 +3085,21 @@ out geom;`;
                 </button>
                 {fpColorPickerOpen&&(
                   <div style={{position:"absolute",left:48,top:0,zIndex:700,background:"white",border:`1.5px solid ${T.border}`,borderRadius:10,padding:10,boxShadow:"0 4px 16px rgba(0,0,0,0.18)",minWidth:200}}>
-                    <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>EPDM-Farbe</div>
+                    <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Fallschutz-Farbe</div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:6}}>
                       {[
-                        {name:"Schwarz",c:"#2A1F18"},
-                        {name:"Anthrazit",c:"#3D3D3D"},
-                        {name:"Braun",c:"#5C3317"},
-                        {name:"Sand",c:"#B89A6B"},
-                        {name:"Terrakotta",c:"#A0522D"},
-                        {name:"Rot",c:"#B23A2A"},
-                        {name:"Blau",c:"#2D5A7D"},
-                        {name:"Grün",c:"#3E6B4A"},
+                        {name:"Holzhäcksel",c:"#E8D4A2"},
+                        {name:"Rindenmulch",c:"#A67B4A"},
+                        {name:"Sand",c:"#F0DBA5"},
+                        {name:"Rundkies",c:"#C9BFA3"},
+                        {name:"EPDM Schwarz",c:"#2A1F18"},
+                        {name:"EPDM Anthrazit",c:"#3D3D3D"},
+                        {name:"EPDM Braun",c:"#5C3317"},
+                        {name:"EPDM Terrakotta",c:"#A0522D"},
+                        {name:"EPDM Rot",c:"#B23A2A"},
+                        {name:"EPDM Blau",c:"#2D5A7D"},
+                        {name:"EPDM Grün",c:"#3E6B4A"},
+                        {name:"Wiese (gebunden)",c:"#9ABC76"},
                       ].map(col=>(
                         <button key={col.c}
                           onClick={()=>{setFpColor(col.c);setFpColorPickerOpen(false);}}
@@ -3463,6 +3689,7 @@ export default function App() {
   const [projects,setProjects]=useState(initProjects);
   const [workPrices,setWorkPrices]=useState(initWorkPrices);
   const [activeProjectId,setActiveProjectId]=useState(initProjects[0]?.id||null);
+  const [catalogFilter,setCatalogFilter]=useState(null); // {mfr: id, mfrName: string} | null
   const [wizardMode]=useState(false);
 
   const activeProject=projects.find(p=>p.id===activeProjectId);
@@ -3475,8 +3702,8 @@ export default function App() {
   function renderPage(){
     switch(page){
       case"dashboard": return <Dashboard equipment={equipment} manufacturers={manufacturers} projects={projects} setPage={setPage} setActiveProjectId={setActiveProjectId}/>;
-      case"catalog": return <Catalog equipment={equipment} setEquipment={setEquipment} manufacturers={manufacturers}/>;
-      case"manufacturers": return <Manufacturers manufacturers={manufacturers} setManufacturers={setManufacturers}/>;
+      case"catalog": return <Catalog equipment={equipment} setEquipment={setEquipment} manufacturers={manufacturers} catalogFilter={catalogFilter} setCatalogFilter={setCatalogFilter}/>;
+      case"manufacturers": return <Manufacturers manufacturers={manufacturers} setManufacturers={setManufacturers} equipment={equipment} setPage={setPage} setCatalogFilter={setCatalogFilter}/>;
       case"workprices": return <WorkPrices workPrices={workPrices} setWorkPrices={setWorkPrices}/>;
       case"projects": return <Projects projects={projects} setProjects={setProjects} setPage={setPage} setActiveProjectId={setActiveProjectId} setWizardMode={()=>{}}/>;
       case"wizard": return <Wizard projects={projects} setProjects={setProjects} setPage={setPage} setActiveProjectId={setActiveProjectId}/>;
